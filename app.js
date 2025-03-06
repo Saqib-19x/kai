@@ -28,11 +28,11 @@ app.use(cookieParser());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Route imports (will create these in the next steps)
-const documentRoutes = require('./routes/documents');
-const conversationRoutes = require('./routes/conversations');
-const voiceRoutes = require('./routes/voice');
-const authRoutes = require('./routes/auth');
-const reportRoutes = require('./routes/reports');
+const documentRoutes = require('./Routes/documents');
+const conversationRoutes = require('./Routes/conversations');
+const voiceRoutes = require('./Routes/voice');
+const authRoutes = require('./Routes/auth');
+const reportRoutes = require('./Routes/reports');
 
 // Auth routes (no logging required)
 app.use('/api/auth', authRoutes);
@@ -49,7 +49,7 @@ app.use('/api/reports', reportRoutes);
 
 // Root route
 app.get('/', (req, res) => {
-  res.json({ message: 'Welcome to AI Document Processor API' });
+  res.json({ message: 'Welcome to KAIE' });
 });
 
 // Error handling middleware
