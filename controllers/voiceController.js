@@ -4,6 +4,16 @@ const openaiService = require('../services/openaiService');
 const textToSpeechService = require('../services/textToSpeechService');
 const Conversation = require('../models/Conversation');
 const asyncHandler = require('../middleware/async');
+const openai = require('../services/openaiService');
+
+// Initialize Twilio client
+const twilioClient = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
+
+// Base URL for callbacks
+const getBaseUrl = () => process.env.BASE_URL || `https://${process.env.DOMAIN || 'your-app.com'}`;
 
 // @desc    Handle incoming voice calls
 // @route   POST /api/voice/incoming
@@ -129,4 +139,131 @@ exports.processTranscription = asyncHandler(async (req, res, next) => {
     console.error('Error processing transcription:', error);
     res.status(500).json({ success: false, error: error.message });
   }
-}); 
+});
+
+/**
+ * Handle initial greeting TwiML for incoming calls
+ * @route   POST /api/voice/initial-greeting
+ * @access  Public (Twilio webhook)
+ */
+exports.getInitialGreeting = (req, res) => {
+  console.log('Initial greeting for call:', req.body.CallSid);
+  
+  const twiml = new VoiceResponse();
+  
+  // Add gather with enhanced settings
+  const gather = twiml.gather({
+    input: 'speech',
+    action: '/api/voice/respond',
+    method: 'POST',
+    language: 'en-US',
+    speechTimeout: 'auto',
+    speechModel: 'phone_call',
+    enhanced: true,
+    profanityFilter: false,
+    timeout: 5
+  });
+  
+  // Optimized greeting
+  gather.say({
+    voice: 'Polly.Joanna-Neural',
+    language: 'en-US',
+  }, "Hi there! How can I help you today?");
+  
+  // Add fallback to prevent disconnection
+  twiml.redirect('/api/voice/respond');
+  
+  return res.type('text/xml').send(twiml.toString());
+};
+
+/**
+ * Make an outbound call using Twilio
+ * @route   POST /api/voice/call
+ * @access  Private
+ */
+exports.makeCall = asyncHandler(async (req, res) => {
+  const { phoneNumber, userId } = req.body;
+  
+  if (!phoneNumber) {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'Phone number is required' 
+    });
+  }
+
+  try {
+    const baseUrl = getBaseUrl();
+    
+    // Create call with optimized settings
+    const call = await twilioClient.calls.create({
+      from: process.env.TWILIO_PHONE_NUMBER,
+      to: phoneNumber,
+      url: `${baseUrl}/api/voice/initial-greeting`,
+      statusCallback: `${baseUrl}/api/voice/status`,
+      statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'],
+      statusCallbackMethod: 'POST',
+      machineDetection: 'Enable',
+      asyncAmd: true,
+      amdStatusCallback: `${baseUrl}/api/voice/amd-status`,
+      record: process.env.RECORD_CALLS === 'true'
+    });
+
+    // Log call in database if needed
+    // await saveCallRecord(call.sid, userId, phoneNumber);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        callSid: call.sid,
+        status: call.status,
+        direction: call.direction,
+        from: call.from,
+        to: call.to
+      }
+    });
+  } catch (error) {
+    console.error('Error making Twilio call:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * Handle call status updates from Twilio
+ * @route   POST /api/voice/status
+ * @access  Public (Twilio webhook)
+ */
+exports.handleCallStatus = asyncHandler(async (req, res) => {
+  const { CallSid, CallStatus, CallDuration } = req.body;
+  
+  console.log(`Call ${CallSid} status updated to ${CallStatus}`, {
+    duration: CallDuration || 0,
+    from: req.body.From,
+    to: req.body.To
+  });
+  
+  // Update call in database if needed
+  // await updateCallStatus(CallSid, CallStatus, CallDuration);
+  
+  res.sendStatus(200);
+});
+
+/**
+ * Handle AMD (Answering Machine Detection) status
+ * @route   POST /api/voice/amd-status
+ * @access  Public (Twilio webhook)
+ */
+exports.handleAmdStatus = asyncHandler(async (req, res) => {
+  const { CallSid, AnsweredBy } = req.body;
+  
+  console.log(`Call ${CallSid} answered by ${AnsweredBy}`);
+  
+  // Update call in database if needed
+  // await updateCallAnsweredBy(CallSid, AnsweredBy);
+  
+  res.sendStatus(200);
+});
+
+module.exports = exports; 
