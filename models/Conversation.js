@@ -13,6 +13,10 @@ const MessageSchema = new mongoose.Schema({
   timestamp: {
     type: Date,
     default: Date.now
+  },
+  language: {
+    type: String,
+    default: 'en'
   }
 });
 
@@ -27,6 +31,30 @@ const ConversationSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Document'
   }],
+  language: {
+    type: String,
+    default: 'en'
+  },
+  userPreferences: {
+    type: Object,
+    default: {}
+  },
+  summary: {
+    type: String,
+    default: ''
+  },
+  analytics: {
+    type: Object,
+    default: {
+      interactionCount: 0,
+      topicsSummary: [],
+      sentimentScore: 0
+    }
+  },
+  metadata: {
+    type: Object,
+    default: {}
+  },
   createdAt: {
     type: Date,
     default: Date.now
