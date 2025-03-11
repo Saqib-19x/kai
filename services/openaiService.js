@@ -59,7 +59,7 @@ class OpenAIService {
     console.log('Processed document IDs:', docIds);
     
     // Try to get from cache first
-    const cacheKey = `docs_${docIds.sort().join('_')}`;
+    const cacheKey = `docs_${query.substring(0, 30)}_${docIds.sort().join('_')}`;
     const cachedContext = this.cache.get(cacheKey);
     
     if (cachedContext) {
@@ -74,6 +74,9 @@ class OpenAIService {
     keywords.push(...commonQuestions.filter(q => query.toLowerCase().includes(q)));
     
     console.log('Search keywords:', keywords);
+    
+    // Special case for URL-related queries
+    const isUrlQuery = /url|link|address|endpoint/.test(query.toLowerCase());
     
     if (keywords.length === 0) {
       // Fall back to getting first paragraph if no keywords
@@ -111,23 +114,49 @@ class OpenAIService {
         console.log(`Processing document: ${doc.originalName || doc._id}`);
         
         // Break text into sections (paragraphs)
-        const sections = doc.extractedText.split(/\n\n|\.\s/).filter(section => section.length > 20);
+        // Use a different regex for URL queries to capture URL patterns better
+        const sectionSplitter = isUrlQuery 
+          ? /(?:\n\n|\.\s)(?![a-z0-9])/  // Don't split in the middle of URLs
+          : /\n\n|\.\s/;
+          
+        const sections = doc.extractedText.split(sectionSplitter).filter(section => section.length > 10);
         console.log(`Document has ${sections.length} sections`);
         
-        for (const section of sections) {
+        for (let i = 0; i < sections.length; i++) {
+          const section = sections[i];
+          
           // Score by keyword matches
           let score = 0;
           const sectionLower = section.toLowerCase();
           
           for (const keyword of keywords) {
-            const regex = new RegExp(keyword, 'gi');
+            const regex = new RegExp(`\\b${keyword}\\b|${keyword}`, 'gi');
             const matches = (sectionLower.match(regex) || []).length;
-            score += matches;
+            
+            // Give more weight to URL matches if searching for URLs
+            if (isUrlQuery && /http|www|\.com|\.io/.test(sectionLower)) {
+              score += matches * 2;
+            } else {
+              score += matches;
+            }
           }
           
           if (score > 0) {
+            // Include context from surrounding sections
+            let contextText = section;
+            
+            // Add previous section for context if it exists
+            if (i > 0) {
+              contextText = sections[i-1] + "\n\n" + contextText;
+            }
+            
+            // Add next section for context if it exists
+            if (i < sections.length - 1) {
+              contextText = contextText + "\n\n" + sections[i+1];
+            }
+            
             relevantSections.push({
-              text: section,
+              text: contextText,
               score,
               docName: doc.originalName || 'Document'
             });
@@ -144,6 +173,19 @@ class OpenAIService {
       console.log(`Found ${topSections.length} relevant sections`);
       
       if (topSections.length === 0) {
+        // Special fallback for URL queries
+        if (isUrlQuery) {
+          // Look for any http or URL-like patterns in the documents
+          for (const doc of docs) {
+            if (!doc.extractedText) continue;
+            
+            const urlMatches = doc.extractedText.match(/https?:\/\/[^\s]+/g);
+            if (urlMatches && urlMatches.length > 0) {
+              return `From "${doc.originalName || 'Document'}": Found URL(s): ${urlMatches.join(', ')}`;
+            }
+          }
+        }
+        
         return 'No specific information found in the documents for this query.';
       }
       
@@ -282,33 +324,31 @@ class OpenAIService {
     return this.promptTemplates.default;
   }
 
-  // Fast keyword extraction without API calls
-  extractKeywordsFromQuery(query) {
-    if (!query) return [];
-    
-    // Common stop words to filter out
-    const stopWords = new Set(['a', 'an', 'the', 'and', 'but', 'or', 'for', 'nor', 'on', 'at', 'to', 'by', 
-      'is', 'are', 'am', 'was', 'were', 'be', 'been', 'being', 'in', 'into', 'of', 'with', 'about',
-      'this', 'that', 'these', 'those', 'it', 'its', 'have', 'has', 'had', 'do', 'does', 'did']);
-    
-    // Extract words and filter non-words and stop words
-    const words = query.toLowerCase()
-      .replace(/[^\w\s]/g, '')
-      .split(/\s+/)
-      .filter(word => word.length > 3 && !stopWords.has(word));
-    
-    // Count frequency
-    const frequency = {};
-    words.forEach(word => {
-      frequency[word] = (frequency[word] || 0) + 1;
-    });
-    
-    // Get top keywords by frequency
-    return Object.entries(frequency)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(entry => entry[0]);
+/**
+ * Extract keywords from a query for better document matching
+ * @param {string} query - The user query
+ * @returns {string[]} Array of keywords
+ */
+extractKeywordsFromQuery(query) {
+  if (!query) return [];
+  
+  // Extract all terms, including shorter ones (2+ chars)
+  const keywords = query.toLowerCase()
+    .replace(/[^\w\s]/g, '')
+    .split(/\s+/)
+    .filter(word => word.length >= 2); // Include 2-char words like "api", "id", etc
+  
+  // Add tech domain-specific terms for better matching when relevant
+  const techTerms = ['api', 'url', 'base', 'post', 'get', 'endpoint', 'request', 'response', 'json'];
+  const hasTechQuery = keywords.some(k => techTerms.includes(k));
+  
+  if (hasTechQuery) {
+    // Add related tech terms that might be in the document
+    keywords.push(...techTerms.filter(term => !keywords.includes(term)));
   }
+  
+  return [...new Set(keywords)]; // Remove duplicates
+}
 
   // Quick language detection without API calls
   async detectLanguage(text) {
