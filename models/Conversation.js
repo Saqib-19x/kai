@@ -62,6 +62,11 @@ const ConversationSchema = new mongoose.Schema({
   updatedAt: {
     type: Date,
     default: Date.now
+  },
+  agentConfig: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'AgentConfig',
+    default: null
   }
 });
 

@@ -43,6 +43,32 @@ const ReportSchema = new mongoose.Schema({
     type: String,
     enum: ['Document', 'Conversation', null]
   },
+  aiUsage: {
+    model: {
+      type: String,
+      default: null
+    },
+    promptTokens: {
+      type: Number,
+      default: 0
+    },
+    completionTokens: {
+      type: Number,
+      default: 0
+    },
+    totalTokens: {
+      type: Number,
+      default: 0
+    },
+    cost: {
+      type: Number,
+      default: 0
+    },
+    customerPrice: {
+      type: Number,
+      default: 0
+    }
+  },
   userAgent: {
     type: String
   },
@@ -58,6 +84,6 @@ const ReportSchema = new mongoose.Schema({
 // Add indexes for better query performance
 ReportSchema.index({ userId: 1, timestamp: -1 });
 ReportSchema.index({ endpoint: 1, timestamp: -1 });
-ReportSchema.index({ timestamp: -1 });
+ReportSchema.index({ 'aiUsage.model': 1 });
 
 module.exports = mongoose.model('Report', ReportSchema); 

@@ -5,7 +5,8 @@ const {
   uploadDocument,
   getDocument,
   getAllDocuments,
-  deleteDocument
+  deleteDocument,
+  askDocumentQuestion
 } = require('../controllers/documentController');
 
 // Import auth middleware
@@ -22,5 +23,8 @@ router.post('/upload', upload.single('file'), uploadDocument);
 router.get('/', getAllDocuments);
 router.get('/:id', getDocument);
 router.delete('/:id', deleteDocument);
+
+// Document Q&A
+router.post('/:id/ask', askDocumentQuestion);
 
 module.exports = router; 

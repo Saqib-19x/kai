@@ -5,11 +5,13 @@ const {
   getConversations,
   getConversation,
   sendMessage,
-  deleteConversation
+  deleteConversation,
+  translateConversation,
+  sendAgentMessage
 } = require('../controllers/conversationController');
 
 // Import auth middleware
-const { protect } = require('../middleware/auth');
+const { protect, authorize } = require('../middleware/auth');
 
 // Protect all routes
 router.use(protect);
@@ -20,5 +22,7 @@ router.get('/', getConversations);
 router.get('/:id', getConversation);
 router.post('/:id/messages', sendMessage);
 router.delete('/:id', deleteConversation);
+router.post('/:id/translate', translateConversation);
+router.post('/:id/agent-messages', sendAgentMessage);
 
 module.exports = router; 

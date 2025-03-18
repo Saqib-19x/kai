@@ -40,6 +40,17 @@ if (!fs.existsSync(uploadDir)) {
 // Set port
 const PORT = process.env.PORT || 3000;
 
+// Include this with your other route imports
+const agentRoutes = require('./routes/agents');
+const publicRoutes = require('./routes/public');
+
+// Add this with your other route registrations
+app.use('/api/agents', agentRoutes);
+app.use('/api/public', publicRoutes);
+
+// Serve embed script statically
+app.use(express.static('public'));
+
 // Start server
 const server = app.listen(PORT, () => {
   console.log(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);

@@ -2,6 +2,24 @@ const { OpenAI } = require('openai');
 const Document = require('../models/Document');
 const NodeCache = require('node-cache');
 
+const pricingConfig = {
+  'gpt-3.5-turbo': {
+    prompt: 0.0015,     // per 1K tokens
+    completion: 0.002    // per 1K tokens
+  },
+  'gpt-4': {
+    prompt: 0.03,       // per 1K tokens
+    completion: 0.06     // per 1K tokens
+  },
+  'gpt-4-turbo': {
+    prompt: 0.01,       // per 1K tokens
+    completion: 0.03     // per 1K tokens
+  }
+};
+
+// Markup percentage (30%)
+const MARKUP_PERCENTAGE = 0.3;
+
 class OpenAIService {
   constructor() {
     this.openai = new OpenAI({
@@ -274,6 +292,19 @@ class OpenAIService {
         max_tokens: 500
       });
       
+      // Get usage data from response
+      const usage = response.usage;
+      
+      // Calculate cost
+      const usageData = await this.calculateCost(
+        model, 
+        usage.prompt_tokens, 
+        usage.completion_tokens
+      );
+      
+      // Attach usage data to response object for logging
+      response.usageData = usageData;
+      
       console.timeEnd('openai_response');
       return response;
     } catch (error) {
@@ -349,6 +380,50 @@ extractKeywordsFromQuery(query) {
   
   return [...new Set(keywords)]; // Remove duplicates
 }
+
+  // Quick language detection without API calls
+  quickLanguageDetection(text) {
+    // Common language patterns and markers
+    const patterns = {
+      en: /^[a-zA-Z\s.,!?]+$/, // English (Latin chars only)
+      es: /[¿¡]|(?:\b(?:el|la|los|las|es|son)\b)/i, // Spanish markers
+      fr: /(?:\b(?:le|la|les|est|sont|je|tu|il|nous|vous|ils)\b)/i, // French markers
+      de: /(?:\b(?:der|die|das|ist|sind|ich|du|er|sie|wir)\b)/i, // German markers
+      zh: /[\u4e00-\u9fff]/, // Chinese characters
+      ja: /[\u3040-\u309f\u30a0-\u30ff]/, // Japanese characters
+      ko: /[\uac00-\ud7af\u1100-\u11ff]/, // Korean characters
+      ru: /[\u0400-\u04FF]/, // Cyrillic characters
+      ar: /[\u0600-\u06FF]/, // Arabic characters
+    };
+
+    // Clean and normalize text
+    const normalizedText = text.trim().toLowerCase();
+    if (!normalizedText) return null;
+
+    // Check for exact matches in cache
+    const cachedLang = this.languageCache.has(normalizedText.substring(0, 50));
+    if (cachedLang) return cachedLang;
+
+    // Test against patterns
+    for (const [lang, pattern] of Object.entries(patterns)) {
+      if (pattern.test(normalizedText)) {
+        // Cache the result for future use
+        this.languageCache.add(normalizedText.substring(0, 50));
+        return lang;
+      }
+    }
+
+    // If no clear match, check character set distributions
+    const charCount = normalizedText.length;
+    const latinChars = (normalizedText.match(/[a-zA-Z]/g) || []).length;
+    
+    // If mostly Latin characters, default to English
+    if (latinChars / charCount > 0.7) {
+      return 'en';
+    }
+
+    return null; // No confident detection
+  }
 
   // Quick language detection without API calls
   async detectLanguage(text) {
@@ -564,6 +639,170 @@ extractKeywordsFromQuery(query) {
     
     // Use a mix of generic and topic-based follow-ups
     return [...topicBasedFollowUps, defaultFollowUps[2]];
+  }
+
+  async calculateCost(model, promptTokens, completionTokens) {
+    // Default to gpt-3.5-turbo pricing if model not found
+    const pricing = pricingConfig[model] || pricingConfig['gpt-3.5-turbo'];
+    
+    // Calculate base cost (convert from per 1K tokens to per token)
+    const promptCost = (promptTokens / 1000) * pricing.prompt;
+    const completionCost = (completionTokens / 1000) * pricing.completion;
+    const totalCost = promptCost + completionCost;
+    
+    // Calculate price with markup
+    const markup = totalCost * MARKUP_PERCENTAGE;
+    const customerPrice = totalCost + markup;
+    
+    return {
+      model,
+      promptTokens,
+      completionTokens,
+      totalTokens: promptTokens + completionTokens,
+      cost: parseFloat(totalCost.toFixed(6)),
+      customerPrice: parseFloat(customerPrice.toFixed(6))
+    };
+  }
+
+  /**
+   * Enhance a system prompt with training data
+   * @param {String} systemPrompt The base system prompt
+   * @param {String} trainingData The training data to analyze
+   * @returns {String} Enhanced system prompt
+   */
+  async enhanceSystemPromptWithTraining(systemPrompt, trainingData) {
+    try {
+      // Use OpenAI to analyze the training data and enhance the prompt
+      const response = await this.openai.chat.completions.create({
+        model: 'gpt-4',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are an AI training specialist. Your task is to enhance a system prompt based on provided training data.'
+          },
+          {
+            role: 'user',
+            content: `Base system prompt: "${systemPrompt}"\n\nTraining data: "${trainingData}"\n\nAnalyze this training data and enhance the system prompt to better capture the patterns, expertise, and style found in the training data. Keep the core intent of the original prompt intact.`
+          }
+        ],
+        temperature: 0.5,
+        max_tokens: 1000
+      });
+      
+      return response.choices[0].message.content;
+    } catch (error) {
+      console.error('Error enhancing system prompt:', error);
+      // Return the original prompt if there's an error
+      return systemPrompt;
+    }
+  }
+
+  /**
+   * Generate a response using a specific agent configuration
+   * @param {Object} options - Options including the agent configuration and messages
+   * @returns {Object} OpenAI API response
+   */
+  async generateAgentResponse(options) {
+    const { agentConfig, messages, contextualInfo } = options;
+    
+    try {
+      // Start timing the request
+      console.time('agent_response');
+      
+      // Generate complete system prompt based on agent configuration
+      let systemPrompt = agentConfig.generateCompleteSystemPrompt();
+      
+      // Add document context if provided
+      if (contextualInfo) {
+        systemPrompt += `\n\nDOCUMENT KNOWLEDGE:\n${contextualInfo}`;
+      }
+      
+      // Replace the first message if it's a system message, or add it if not
+      let conversationMessages = [...messages];
+      if (conversationMessages.length > 0 && conversationMessages[0].role === 'system') {
+        conversationMessages[0] = { role: 'system', content: systemPrompt };
+      } else {
+        conversationMessages.unshift({ role: 'system', content: systemPrompt });
+      }
+      
+      // Call OpenAI API with the agent's configuration
+      const response = await this.openai.chat.completions.create({
+        model: agentConfig.model,
+        messages: conversationMessages,
+        temperature: agentConfig.temperature,
+        max_tokens: agentConfig.maxTokens
+      });
+      
+      // Calculate cost based on model and usage
+      const usage = response.usage;
+      const usageData = await this.calculateCost(
+        agentConfig.model,
+        usage.prompt_tokens,
+        usage.completion_tokens
+      );
+      
+      // Attach usage data to response
+      response.usageData = usageData;
+      
+      console.timeEnd('agent_response');
+      return response;
+    } catch (error) {
+      console.error('Error generating agent response:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get chat completion with error handling and retries
+   * @param {Array} messages Message array for OpenAI
+   * @param {Object} options Additional options
+   * @returns {Promise<Object>} Response content and usage
+   */
+  async getChatCompletion(messages, options = {}) {
+    const defaultOptions = {
+      model: 'gpt-3.5-turbo',
+      temperature: 0.7,
+      max_tokens: 500,
+      top_p: 1,
+      retry: 2,
+      retryDelay: 1000
+    };
+    
+    const config = { ...defaultOptions, ...options };
+    let attempts = 0;
+    let lastError = null;
+    
+    while (attempts <= config.retry) {
+      try {
+        const completion = await this.openai.chat.completions.create({
+          model: config.model,
+          messages,
+          temperature: config.temperature,
+          max_tokens: config.max_tokens,
+          top_p: config.top_p
+        });
+        
+        return {
+          content: completion.choices[0].message.content.trim(),
+          usage: completion.usage
+        };
+      } catch (error) {
+        lastError = error;
+        attempts++;
+        
+        // If rate limiting or server error, wait and retry
+        if (error.status === 429 || error.status >= 500) {
+          await new Promise(resolve => setTimeout(resolve, config.retryDelay * attempts));
+        } else {
+          // For other errors, don't retry
+          break;
+        }
+      }
+    }
+    
+    // All attempts failed
+    console.error('OpenAI API Error:', lastError);
+    throw new Error(`Failed to get chat completion: ${lastError.message}`);
   }
 }
 
