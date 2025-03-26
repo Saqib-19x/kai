@@ -4,10 +4,12 @@ const {
   getAgents,
   getAgent,
   updateAgent,
+  patchAgent,
   deleteAgent,
   trainAgent,
   startConversation,
-  updateEmbedSettings
+  updateEmbedSettings,
+  getAgentAnalytics
 } = require('../controllers/agentController');
 
 const router = express.Router();
@@ -27,7 +29,8 @@ router
   .route('/:id')
   .get(getAgent)
   .put(updateAgent)
-  .delete(deleteAgent);
+  .delete(deleteAgent)
+  .patch(patchAgent);
 
 router
   .route('/:id/train')
@@ -40,5 +43,7 @@ router
 router
   .route('/:id/embed-settings')
   .put(updateEmbedSettings);
+
+router.get('/:id/analytics', getAgentAnalytics);
 
 module.exports = router; 

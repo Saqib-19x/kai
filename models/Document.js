@@ -68,6 +68,16 @@ const DocumentSchema = new mongoose.Schema({
     pageCount: Number,
     detectedLanguage: String,
     confidence: Number
+  },
+  agent: {
+    type: mongoose.Schema.ObjectId,
+    ref: 'AgentConfig',
+    required: true
+  },
+  user: {
+    type: mongoose.Schema.ObjectId,
+    ref: 'User',
+    required: true
   }
 });
 

@@ -1,28 +1,24 @@
 const express = require('express');
 const router = express.Router();
+const { protect } = require('../middleware/auth');
 const {
-  createConversation,
-  getConversations,
-  getConversation,
+  startChat,
   sendMessage,
-  deleteConversation,
-  translateConversation,
-  sendAgentMessage
+  getChatHistory,
+  getChatDetail,
+  getAnalytics,
+  deleteChat
 } = require('../controllers/conversationController');
-
-// Import auth middleware
-const { protect, authorize } = require('../middleware/auth');
 
 // Protect all routes
 router.use(protect);
 
-// Conversation routes
-router.post('/', createConversation);
-router.get('/', getConversations);
-router.get('/:id', getConversation);
-router.post('/:id/messages', sendMessage);
-router.delete('/:id', deleteConversation);
-router.post('/:id/translate', translateConversation);
-router.post('/:id/agent-messages', sendAgentMessage);
+// Chat routes
+router.post('/start', startChat);
+router.post('/:conversationId/message', sendMessage);
+router.get('/', getChatHistory);
+router.get('/:conversationId', getChatDetail);
+router.get('/:id/analytics', getAnalytics);
+router.delete('/:conversationId', deleteChat);
 
-module.exports = router; 
+module.exports = router;

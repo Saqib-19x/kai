@@ -38,6 +38,35 @@ const KnowledgeSourceSchema = new mongoose.Schema({
   }
 });
 
+const ChunkSchema = new mongoose.Schema({
+  text: {
+    type: String,
+    required: true
+  },
+  embedding: {
+    type: [Number],
+    required: true
+  },
+  sourceDoc: {
+    type: String,
+    required: true
+  }
+});
+
+const KnowledgeBaseSchema = new mongoose.Schema({
+  documents: [{
+    documentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Document'
+    },
+    chunks: [ChunkSchema]
+  }],
+  lastUpdated: {
+    type: Date,
+    default: Date.now
+  }
+});
+
 const AgentConfigSchema = new mongoose.Schema({
   user: {
     type: mongoose.Schema.Types.ObjectId,
@@ -96,8 +125,8 @@ const AgentConfigSchema = new mongoose.Schema({
     default: false
   },
   trainingData: {
-    type: String,
-    select: false // Only load when explicitly requested
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'TrainingData'
   },
   avatar: {
     type: String,
@@ -149,7 +178,12 @@ const AgentConfigSchema = new mongoose.Schema({
       type: String,
       default: '500px'
     }
-  }
+  },
+  knowledgeBase: KnowledgeBaseSchema,
+  websiteSources: [{
+    url: String,
+    lastCrawled: Date
+  }]
 });
 
 // Pre-save hook to update the 'updatedAt' field
@@ -160,26 +194,27 @@ AgentConfigSchema.pre('save', function(next) {
 
 // Method to generate a complete system prompt based on configuration
 AgentConfigSchema.methods.generateCompleteSystemPrompt = function() {
-  let prompt = this.systemPrompt;
-  
-  // Add personality traits
-  const personalityPrompts = {
-    professional: 'Maintain a professional tone. Be clear, respectful, and focused on providing valuable information.',
-    friendly: 'Be conversational, warm, and approachable. Use casual language and show empathy.',
-    technical: 'Focus on technical accuracy and detail. Use precise terminology and provide in-depth explanations.',
-    creative: 'Be imaginative and think outside the box. Suggest innovative approaches and ideas.',
-    concise: 'Be brief and to the point. Prioritize clarity and efficiency in your responses.',
-    detailed: 'Provide comprehensive explanations with examples and context. Be thorough in your responses.'
-  };
-  
-  prompt += `\n\n${personalityPrompts[this.personality] || personalityPrompts.professional}`;
-  
-  // Add expertise areas if defined
-  if (this.expertise && this.expertise.length > 0) {
-    prompt += `\n\nYou are an expert in: ${this.expertise.join(', ')}.`;
-  }
-  
-  return prompt;
+  return `
+    CRITICAL INSTRUCTIONS FOR AI BEHAVIOR:
+    You are "${this.name}", a specialized AI assistant configured as follows:
+
+    ROLE AND IDENTITY:
+    - Primary Function: ${this.description}
+    - Expertise Areas: ${this.expertise.join(', ')}
+    - Personality Style: ${this.personality}
+    
+    STRICT BEHAVIORAL RULES:
+    1. NEVER deviate from your configured expertise areas: ${this.expertise.join(', ')}
+    2. ONLY provide advice within your specific role as ${this.description}
+    3. ALWAYS maintain a ${this.personality} communication style
+    4. If a question is outside your expertise areas, respond with: "I am configured as a ${this.name} specialized in ${this.expertise.join(', ')}. This question is outside my area of expertise."
+    5. Never pretend to have knowledge beyond your configuration
+    
+    CORE SYSTEM PROMPT:
+    ${this.systemPrompt}
+    
+    REMEMBER: You are ONLY ${this.name} with the above configuration. Do not assume other roles or expertise.
+  `.trim();
 };
 
 module.exports = mongoose.model('AgentConfig', AgentConfigSchema); 

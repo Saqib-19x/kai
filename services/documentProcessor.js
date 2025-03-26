@@ -35,7 +35,7 @@ class DocumentProcessor {
       
       // Process based on file type
       if (fileType === 'application/pdf') {
-        extractedText = await this.extractTextFromPDF(filePath, document.languageHint || 'eng');
+        extractedText = await this.extractTextFromPDF(filePath);
       } else if (fileType.startsWith('image/')) {
         extractedText = await this.extractTextFromImage(filePath, document.languageHint || 'eng');
       } else if (fileType === 'text/plain' || fileType === 'text/csv') {
@@ -81,13 +81,14 @@ class DocumentProcessor {
    * @param {string} filePath Path to the PDF file
    * @returns {Promise<string>} Extracted text
    */
-  async extractTextFromPdf(filePath) {
+  async extractTextFromPDF(filePath) {
     try {
       const dataBuffer = await fs.readFile(filePath);
       const data = await pdfParse(dataBuffer);
       return data.text;
     } catch (error) {
-      throw new Error(`Error extracting text from PDF: ${error.message}`);
+      console.error('Error extracting text from PDF:', error);
+      throw error;
     }
   }
   
@@ -110,7 +111,7 @@ class DocumentProcessor {
    * @param {string} filePath Path to the text file
    * @returns {Promise<string>} Extracted text
    */
-  async extractTextFromTxt(filePath) {
+  async extractTextFromTextFile(filePath) {
     try {
       const text = await fs.readFile(filePath, 'utf8');
       return text;

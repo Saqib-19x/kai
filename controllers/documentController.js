@@ -3,6 +3,7 @@ const documentProcessor = require('../services/documentProcessor');
 const asyncHandler = require('../middleware/async');
 const path = require('path');
 const openaiService = require('../services/openaiService');
+const AgentConfig = require('../models/AgentConfig');
 
 // @desc    Upload a new document
 // @route   POST /api/documents/upload
@@ -15,13 +16,40 @@ exports.uploadDocument = asyncHandler(async (req, res, next) => {
     });
   }
 
-  // Create document in database
+  // Check if agentId is provided
+  if (!req.body.agentId) {
+    return res.status(400).json({
+      success: false,
+      error: 'Please provide an agent ID'
+    });
+  }
+
+  // Verify agent exists and user has access
+  const agent = await AgentConfig.findById(req.body.agentId);
+  if (!agent) {
+    return res.status(400).json({
+      success: false,
+      error: 'Agent not found'
+    });
+  }
+
+  // Check if user has access to the agent
+  if (agent.user.toString() !== req.user.id && req.user.role !== 'admin') {
+    return res.status(401).json({
+      success: false,
+      error: 'Not authorized to upload documents to this agent'
+    });
+  }
+
+  // Create document in database with agent reference
   const document = await Document.create({
     fileName: req.file.filename,
     originalName: req.file.originalname,
     fileType: req.file.mimetype,
     fileSize: req.file.size,
-    filePath: req.file.path
+    filePath: req.file.path,
+    agent: req.body.agentId,
+    user: req.user.id  // Also store the user who uploaded it
   });
 
   // Start processing the document in the background
@@ -57,7 +85,27 @@ exports.getDocument = asyncHandler(async (req, res, next) => {
 // @route   GET /api/documents
 // @access  Public
 exports.getAllDocuments = asyncHandler(async (req, res, next) => {
-  const documents = await Document.find().sort({ createdAt: -1 });
+  let query = {};
+  
+  // Filter by agent if agentId is provided
+  if (req.query.agentId) {
+    query.agent = req.query.agentId;
+  }
+
+  // Only show documents the user has access to
+  if (req.user.role !== 'admin') {
+    const accessibleAgents = await AgentConfig.find({
+      $or: [
+        { user: req.user.id },
+        { isPublic: true }
+      ]
+    });
+    query.agent = { $in: accessibleAgents.map(agent => agent._id) };
+  }
+
+  const documents = await Document.find(query)
+    .populate('agent', 'name')
+    .sort({ createdAt: -1 });
   
   res.status(200).json({
     success: true,

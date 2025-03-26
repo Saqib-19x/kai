@@ -27,6 +27,15 @@ app.use(cookieParser());
 // Set static folder for uploads
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
+// Disable express default error handler
+app.set('x-powered-by', false);
+
+// Add headers middleware
+app.use((req, res, next) => {
+  res.setHeader('Content-Type', 'application/json');
+  next();
+});
+
 // Route imports (will create these in the next steps)
 const documentRoutes = require('./Routes/documents');
 const conversationRoutes = require('./Routes/conversations');
@@ -52,7 +61,14 @@ app.get('/', (req, res) => {
   res.json({ message: 'Welcome to KAIE' });
 });
 
-// Error handling middleware
+// Error handler must be last
 app.use(errorHandler);
+
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (err, promise) => {
+  console.log('Error:', err.message);
+  // Close server & exit process
+  server.close(() => process.exit(1));
+});
 
 module.exports = app; 

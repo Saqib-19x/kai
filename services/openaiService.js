@@ -702,49 +702,17 @@ extractKeywordsFromQuery(query) {
    * @param {Object} options - Options including the agent configuration and messages
    * @returns {Object} OpenAI API response
    */
-  async generateAgentResponse(options) {
-    const { agentConfig, messages, contextualInfo } = options;
-    
+  async generateAgentResponse({ agentConfig, messages, temperature, maxTokens }) {
     try {
-      // Start timing the request
-      console.time('agent_response');
-      
-      // Generate complete system prompt based on agent configuration
-      let systemPrompt = agentConfig.generateCompleteSystemPrompt();
-      
-      // Add document context if provided
-      if (contextualInfo) {
-        systemPrompt += `\n\nDOCUMENT KNOWLEDGE:\n${contextualInfo}`;
-      }
-      
-      // Replace the first message if it's a system message, or add it if not
-      let conversationMessages = [...messages];
-      if (conversationMessages.length > 0 && conversationMessages[0].role === 'system') {
-        conversationMessages[0] = { role: 'system', content: systemPrompt };
-      } else {
-        conversationMessages.unshift({ role: 'system', content: systemPrompt });
-      }
-      
-      // Call OpenAI API with the agent's configuration
       const response = await this.openai.chat.completions.create({
-        model: agentConfig.model,
-        messages: conversationMessages,
-        temperature: agentConfig.temperature,
-        max_tokens: agentConfig.maxTokens
+        model: agentConfig.model || 'gpt-4',
+        messages,
+        temperature: temperature || 0.3,
+        max_tokens: maxTokens || 1000,
+        presence_penalty: 0.6,
+        frequency_penalty: 0.3
       });
-      
-      // Calculate cost based on model and usage
-      const usage = response.usage;
-      const usageData = await this.calculateCost(
-        agentConfig.model,
-        usage.prompt_tokens,
-        usage.completion_tokens
-      );
-      
-      // Attach usage data to response
-      response.usageData = usageData;
-      
-      console.timeEnd('agent_response');
+
       return response;
     } catch (error) {
       console.error('Error generating agent response:', error);
@@ -774,7 +742,7 @@ extractKeywordsFromQuery(query) {
     
     while (attempts <= config.retry) {
       try {
-        const completion = await this.openai.chat.completions.create({
+        const response = await this.openai.chat.completions.create({
           model: config.model,
           messages,
           temperature: config.temperature,
@@ -783,8 +751,8 @@ extractKeywordsFromQuery(query) {
         });
         
         return {
-          content: completion.choices[0].message.content.trim(),
-          usage: completion.usage
+          content: response.choices[0].message.content.trim(),
+          usage: response.usage
         };
       } catch (error) {
         lastError = error;
@@ -803,6 +771,29 @@ extractKeywordsFromQuery(query) {
     // All attempts failed
     console.error('OpenAI API Error:', lastError);
     throw new Error(`Failed to get chat completion: ${lastError.message}`);
+  }
+
+  async createDocumentChunks(text, options = {}) {
+    const {
+      maxChunkSize = 500,
+      overlap = 50
+    } = options;
+
+    // Implement chunking logic here
+    // Return array of text chunks
+  }
+
+  async createEmbedding(text) {
+    try {
+      const response = await this.openai.embeddings.create({
+        model: 'text-embedding-ada-002',
+        input: text.replace(/\n/g, ' ').trim()
+      });
+      return response.data[0].embedding;
+    } catch (error) {
+      console.error('Error creating embedding:', error);
+      throw error;
+    }
   }
 }
 

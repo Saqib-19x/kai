@@ -1,269 +1,331 @@
 const Conversation = require('../models/Conversation');
+const AgentConfig = require('../models/AgentConfig');
 const Document = require('../models/Document');
 const openaiService = require('../services/openaiService');
 const asyncHandler = require('../middleware/async');
 const ErrorResponse = require('../utils/errorResponse');
-const AgentConfig = require('../models/AgentConfig');
-const knowledgeSourceService = require('../services/knowledgeSourceService');
+const { calculateCosineSimilarity } = require('../utils/vectorUtils');
+const mongoose = require('mongoose');
+const { getRelevantContext } = require('./agentController');
 
-// @desc    Start a new conversation
-// @route   POST /api/conversations
-// @access  Public
-exports.createConversation = asyncHandler(async (req, res, next) => {
-  const { title, documentIds = [], language = 'en', userPreferences = {} } = req.body;
+// @desc    Start chat with AI agent
+// @route   POST /api/conversations/start
+// @access  Private
+exports.startChat = asyncHandler(async (req, res) => {
+  const { agentId, message } = req.body;
 
-  // Validate document IDs if provided
-  if (documentIds.length > 0) {
-    const documents = await Document.find({ _id: { $in: documentIds } });
-    if (documents.length !== documentIds.length) {
-      return res.status(400).json({
-        success: false,
-        error: 'One or more document IDs are invalid'
-      });
-    }
-  }
-
-  // Create a new conversation
-  const conversation = await Conversation.create({
-    title: title || 'New Conversation',
-    documentIds,
-    messages: [],
-    language,
-    userPreferences,
-    analytics: {
-      topicsSummary: [],
-      sentimentScore: 0,
-      interactionCount: 0
-    }
-  });
-
-  res.status(201).json({
-    success: true,
-    data: conversation
-  });
-});
-
-// @desc    Get all conversations
-// @route   GET /api/conversations
-// @access  Public
-exports.getConversations = asyncHandler(async (req, res, next) => {
-  const conversations = await Conversation.find().sort({ updatedAt: -1 });
-
-  res.status(200).json({
-    success: true,
-    count: conversations.length,
-    data: conversations
-  });
-});
-
-// @desc    Get a single conversation
-// @route   GET /api/conversations/:id
-// @access  Public
-exports.getConversation = asyncHandler(async (req, res, next) => {
-  const conversation = await Conversation.findById(req.params.id).populate('documentIds');
-
-  if (!conversation) {
-    return res.status(404).json({
+  if (!agentId || !message) {
+    return res.status(400).json({
       success: false,
-      error: 'Conversation not found'
+      error: 'Please provide both agentId and initial message'
     });
   }
 
-  res.status(200).json({
-    success: true,
-    data: conversation
-  });
+  try {
+    // Find the AI agent with all necessary data
+    const agent = await AgentConfig.findById(agentId);
+    if (!agent) {
+      return res.status(404).json({
+        success: false,
+        error: 'Agent not found'
+      });
+    }
+
+    // Get relevant context from knowledge base
+    const relevantContext = await getRelevantContext(agentId, message);
+    
+    // Get documents content
+    const documents = await Document.find({
+      $or: [
+        { _id: { $in: agent.allowedDocuments || [] } },
+        { agent: agentId }
+      ]
+    }).select('originalName fileName extractedText fileType');
+
+    console.log('Found documents:', documents.length);
+
+    let documentContent = '';
+    if (documents && documents.length > 0) {
+      documentContent = documents.map(doc => `
+Document: ${doc.originalName || doc.fileName}
+Content:
+${doc.extractedText || 'No content available'}
+-------------------
+`).join('\n');
+    }
+
+    // Create system message with both document content and relevant context
+    const systemMessage = {
+      role: 'system',
+      content: `You are ${agent.name}, an AI assistant. ${agent.systemPrompt || ''}
+
+${documentContent ? `Available Documents:\n${documentContent}\n` : ''}
+${relevantContext ? `Most Relevant Context:\n${relevantContext}\n` : ''}
+
+Instructions:
+1. Use the information from these documents and relevant context to answer questions
+2. When referencing information, mention which document it's from
+3. If the information isn't in the documents or context, say "I don't have that information in my knowledge base"
+4. Be precise and accurate with the information provided
+`
+    };
+
+    // Get AI response
+    const response = await openaiService.generateAgentResponse({
+      agentConfig: agent,
+      messages: [
+        systemMessage,
+        { role: 'user', content: message }
+      ],
+      temperature: 0.3,
+      maxTokens: 1000
+    });
+
+    // Generate a short title from the first message
+    const chatTitle = generateChatTitle(message);
+
+    // Create conversation with auto-generated title
+    const conversation = new Conversation({
+      user: req.user.id,
+      agentConfig: agent._id,
+      title: chatTitle,
+      messages: [
+        systemMessage,
+        {
+          role: 'user',
+          content: message,
+          timestamp: Date.now()
+        },
+        {
+          role: 'assistant',
+          content: response.choices[0].message.content,
+          timestamp: Date.now()
+        }
+      ],
+      analytics: {
+        startTime: Date.now(),
+        messageCount: 3,
+        lastInteraction: Date.now()
+      }
+    });
+
+    await conversation.save();
+
+    // Debug log
+    console.log('Documents available:', Boolean(documentContent));
+    console.log('Document count:', documents.length);
+
+    res.status(201).json({
+      success: true,
+      data: {
+        conversationId: conversation._id,
+        messages: conversation.messages.filter(m => m.role !== 'system'),
+        agent: {
+          id: agent._id,
+          name: agent.name,
+          expertise: agent.expertise,
+          hasKnowledgeBase: Boolean(documentContent),
+          documentCount: documents.length
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Error in startChat:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Error starting conversation',
+      details: error.message
+    });
+  }
 });
 
-// @desc    Send a message in a conversation with document context
-// @route   POST /api/conversations/:id/messages
-// @access  Public
-exports.sendMessage = asyncHandler(async (req, res, next) => {
-  const { message, includeDocuments = true } = req.body;
-  
+// @desc    Send message in conversation
+// @route   POST /api/conversations/:conversationId/message
+// @access  Private
+exports.sendMessage = asyncHandler(async (req, res) => {
+  const { message } = req.body;
+  const { conversationId } = req.params;
+
   if (!message) {
     return res.status(400).json({
       success: false,
       error: 'Please provide a message'
     });
   }
-  
-  // Get conversation
-  const conversation = await Conversation.findById(req.params.id);
-  
+
+  // Validate conversationId format
+  if (!mongoose.Types.ObjectId.isValid(conversationId)) {
+    return res.status(400).json({
+      success: false,
+      error: 'Invalid conversation ID format'
+    });
+  }
+
+  // Find conversation with populated agent config
+  const conversation = await Conversation.findOne({
+    _id: conversationId,
+    user: req.user.id
+  }).populate({
+    path: 'agentConfig',
+    populate: {
+      path: 'allowedDocuments'
+    }
+  });
+
   if (!conversation) {
     return res.status(404).json({
       success: false,
       error: 'Conversation not found'
     });
   }
-  
-  // Add user message to conversation
-  conversation.messages.push({
-    role: 'user',
-    content: message,
-    timestamp: Date.now(),
-    language: conversation.language
-  });
-  
-  // Increment interaction count
-  conversation.analytics.interactionCount += 1;
-  
-  // Build context for AI response
-  let context = '';
-  if (includeDocuments && conversation.documentIds && conversation.documentIds.length > 0) {
-    // Get document context based on query
-    const relevantContext = await getRelevantDocumentContext(message, conversation.documentIds);
-    if (relevantContext) {
-      context = `The following information may be relevant to the question:\n\n${relevantContext}\n\n`;
-    }
-  }
-  
-  // Get AI response
-  let aiResponse;
+
   try {
-    // Get or create system prompt
-    let systemPrompt = DEFAULT_SYSTEM_PROMPT;
-    if (conversation.agentConfig) {
-      const agentConfig = await AgentConfig.findById(conversation.agentConfig);
-      if (agentConfig) {
-        systemPrompt = agentConfig.generateCompleteSystemPrompt();
-      }
+    // Get relevant context for the new message
+    const relevantContext = await getRelevantContext(conversation.agentConfig._id, message);
+
+    // If this is the first real message (excluding system messages), update the title
+    const userMessages = conversation.messages.filter(msg => msg.role === 'user');
+    if (userMessages.length === 0) {
+      conversation.title = generateChatTitle(message);
     }
-    
-    // Update system message with context if needed
-    let messages = [...conversation.messages];
-    
-    // Add context to system message if available
-    if (context) {
-      const contextMessage = {
-        role: 'system',
-        content: `${systemPrompt}\n\n${context}`,
-      };
-      
-      // Replace system message or add it if not present
-      const sysIndex = messages.findIndex(m => m.role === 'system');
-      if (sysIndex >= 0) {
-        messages[sysIndex] = contextMessage;
-      } else {
-        messages = [contextMessage, ...messages];
-      }
+
+    // Get documents content
+    const documents = await Document.find({
+      $or: [
+        { _id: { $in: conversation.agentConfig.allowedDocuments || [] } },
+        { agent: conversation.agentConfig._id }
+      ]
+    });
+
+    let documentContent = '';
+    if (documents && documents.length > 0) {
+      documentContent = documents.map(doc => `
+Document: ${doc.originalName || doc.fileName}
+Content:
+${doc.extractedText || 'No content available'}
+-------------------
+`).join('\n');
     }
-    
+
+    // Get recent conversation history
+    const recentMessages = conversation.messages
+      .filter(m => m.role !== 'system')
+      .slice(-5);
+
+    // Create system message with context
+    const systemMessage = {
+      role: 'system',
+      content: `${conversation.agentConfig.generateCompleteSystemPrompt()}
+        
+        ${relevantContext ? `Relevant Context:\n${relevantContext}\n` : ''}
+        
+        Previous conversation context:
+        ${recentMessages.map(m => `${m.role}: ${m.content}`).join('\n')}
+        
+        Remember to only respond based on provided knowledge and stay in character.`
+    };
+
     // Get AI response
-    const responseData = await openaiService.getChatCompletion(messages);
-    aiResponse = responseData.content;
-    
-    // Track AI usage
-    const aiUsage = responseData.usage || null;
-    
-    // Add assistant response to conversation
+    const response = await openaiService.generateAgentResponse({
+      agentConfig: conversation.agentConfig,
+      messages: [
+        systemMessage,
+        ...recentMessages,
+        { role: 'user', content: message }
+      ],
+      temperature: 0.3,
+      maxTokens: 1000
+    });
+
+    // Add messages to conversation
+    conversation.messages.push({
+      role: 'user',
+      content: message,
+      timestamp: Date.now()
+    });
+
     conversation.messages.push({
       role: 'assistant',
-      content: aiResponse,
-      timestamp: Date.now(),
-      language: conversation.language
+      content: response.choices[0].message.content,
+      timestamp: Date.now()
     });
-    
-    // Update sentiment score
-    conversation.analytics.sentimentScore = await openaiService.analyzeSentiment(
-      conversation.messages.slice(-5)
-    );
-    
-    // Save conversation
+
+    // Update analytics
+    conversation.analytics = conversation.analytics || {};
+    conversation.analytics.messageCount = (conversation.analytics.messageCount || 0) + 2;
+    conversation.analytics.lastInteraction = Date.now();
+
     await conversation.save();
-    
+
     res.status(200).json({
       success: true,
       data: {
-        message: aiResponse,
-        conversation: conversation,
-        aiUsage // Include usage data for billing/tracking
+        message: response.choices[0].message.content,
+        conversation: conversation._id,
+        title: conversation.title
       }
     });
+
   } catch (error) {
-    console.error('Error getting AI response:', error);
+    console.error('Error sending message:', error);
     return res.status(500).json({
       success: false,
-      error: 'Error generating AI response'
+      error: 'Error processing message'
     });
   }
 });
 
-/**
- * Get relevant context from documents based on query
- * @param {string} query The user's query
- * @param {Array} documentIds Array of document IDs to search
- * @returns {Promise<string>} Relevant context text
- */
-async function getRelevantDocumentContext(query, documentIds) {
-  try {
-    // Get documents
-    const documents = await Document.find({ _id: { $in: documentIds } });
-    if (!documents || documents.length === 0) return '';
-    
-    // Simple keyword matching for now (will be enhanced with embeddings later)
-    const queryKeywords = query.toLowerCase()
-      .match(/\b[a-z]{3,}\b/g) || [];
-    
-    let relevantChunks = [];
-    
-    // Find relevant chunks from each document
-    for (const doc of documents) {
-      if (!doc.chunks || doc.chunks.length === 0) {
-        // Chunk the document if not already done
-        await doc.chunkDocument();
-      }
-      
-      // Score each chunk based on keyword matches
-      for (const chunk of doc.chunks) {
-        const chunkText = chunk.text.toLowerCase();
-        let score = 0;
-        
-        queryKeywords.forEach(keyword => {
-          if (chunkText.includes(keyword)) {
-            score += 1;
-          }
-        });
-        
-        if (score > 0) {
-          relevantChunks.push({
-            text: chunk.text,
-            score,
-            docTitle: doc.fileName
-          });
-        }
-      }
-    }
-    
-    // Sort by relevance score and get top chunks
-    relevantChunks.sort((a, b) => b.score - a.score);
-    const topChunks = relevantChunks.slice(0, 3);
-    
-    // Combine context with document references
-    return topChunks.map(chunk => 
-      `From document "${chunk.docTitle}":\n${chunk.text}`
-    ).join('\n\n');
-  } catch (error) {
-    console.error('Error getting document context:', error);
-    return '';
-  }
-}
+// @desc    Get chat history (brief)
+// @route   GET /api/conversations
+// @access  Private
+exports.getChatHistory = asyncHandler(async (req, res) => {
+  const conversations = await Conversation.find({ user: req.user.id })
+    .select('title createdAt updatedAt agentConfig')
+    .populate('agentConfig', 'name')
+    .sort({ updatedAt: -1 });
 
-// @desc    Translate conversation to different language
-// @route   POST /api/conversations/:id/translate
-// @access  Public
-exports.translateConversation = asyncHandler(async (req, res, next) => {
-  const { targetLanguage } = req.body;
+  const briefHistory = conversations.map(conv => ({
+    id: conv._id,
+    title: conv.title,
+    agentName: conv.agentConfig?.name || 'Unknown Agent',
+    createdAt: conv.createdAt,
+    updatedAt: conv.updatedAt
+  }));
 
-  if (!targetLanguage) {
+  res.status(200).json({
+    success: true,
+    count: conversations.length,
+    data: briefHistory
+  });
+});
+
+// @desc    Get detailed chat
+// @route   GET /api/conversations/:conversationId
+// @access  Private
+exports.getChatDetail = asyncHandler(async (req, res) => {
+  const { conversationId } = req.params;
+
+  // Validate conversation ID format
+  if (!mongoose.Types.ObjectId.isValid(conversationId)) {
     return res.status(400).json({
       success: false,
-      error: 'Target language is required'
+      error: 'Invalid conversation ID format'
     });
   }
 
-  const conversation = await Conversation.findById(req.params.id);
+  // Find conversation with populated agent config and documents
+  const conversation = await Conversation.findOne({
+    _id: conversationId,
+    user: req.user.id
+  }).populate({
+    path: 'agentConfig',
+    select: 'name description expertise personality',
+    populate: {
+      path: 'allowedDocuments',
+      select: 'fileName originalName'
+    }
+  });
 
   if (!conversation) {
     return res.status(404).json({
@@ -272,37 +334,41 @@ exports.translateConversation = asyncHandler(async (req, res, next) => {
     });
   }
 
-  // Translate all messages
-  const translatedMessages = await Promise.all(
-    conversation.messages.map(async (message) => {
-      const translatedContent = await openaiService.translateText(
-        message.content,
-        targetLanguage
-      );
-      return {
-        ...message.toObject(),
-        content: translatedContent,
-        originalContent: message.content,
-        language: targetLanguage
-      };
-    })
-  );
-
-  res.status(200).json({
+  // Format the response
+  const formattedResponse = {
     success: true,
     data: {
-      originalLanguage: conversation.language,
-      targetLanguage,
-      translatedMessages
+      id: conversation._id,
+      title: conversation.title,
+      agent: {
+        id: conversation.agentConfig?._id,
+        name: conversation.agentConfig?.name,
+        expertise: conversation.agentConfig?.expertise || []
+      },
+      messages: conversation.messages
+        .filter(msg => msg.role !== 'system') // Exclude system messages
+        .map(msg => ({
+          role: msg.role,
+          content: msg.content,
+          timestamp: msg.timestamp
+        })),
+      createdAt: conversation.createdAt,
+      updatedAt: conversation.updatedAt,
+      analytics: conversation.analytics || {}
     }
-  });
+  };
+
+  res.status(200).json(formattedResponse);
 });
 
 // @desc    Get conversation analytics
 // @route   GET /api/conversations/:id/analytics
-// @access  Public
-exports.getConversationAnalytics = asyncHandler(async (req, res, next) => {
-  const conversation = await Conversation.findById(req.params.id);
+// @access  Private
+exports.getAnalytics = asyncHandler(async (req, res) => {
+  const conversation = await Conversation.findOne({
+    _id: req.params.id,
+    user: req.user.id
+  });
 
   if (!conversation) {
     return res.status(404).json({
@@ -311,13 +377,16 @@ exports.getConversationAnalytics = asyncHandler(async (req, res, next) => {
     });
   }
 
-  // Generate or update analytics
+  // Calculate additional analytics
   const analytics = {
     ...conversation.analytics,
-    messageCount: conversation.messages.length,
-    averageResponseTime: await openaiService.calculateResponseTimes(conversation.messages),
-    topKeywords: await openaiService.extractKeywords(conversation.messages),
-    sentimentTrend: await openaiService.analyzeSentimentTrend(conversation.messages)
+    duration: Date.now() - conversation.analytics.startTime,
+    averageResponseTime: calculateAverageResponseTime(conversation.messages),
+    messageDistribution: {
+      user: conversation.messages.filter(m => m.role === 'user').length,
+      assistant: conversation.messages.filter(m => m.role === 'assistant').length
+    },
+    topKeywords: await extractKeywords(conversation.messages)
   };
 
   res.status(200).json({
@@ -326,113 +395,73 @@ exports.getConversationAnalytics = asyncHandler(async (req, res, next) => {
   });
 });
 
-// @desc    Delete a conversation
-// @route   DELETE /api/conversations/:id
-// @access  Public
-exports.deleteConversation = asyncHandler(async (req, res, next) => {
-  const conversation = await Conversation.findById(req.params.id);
+// @desc    Delete a chat
+// @route   DELETE /api/conversations/:conversationId
+// @access  Private
+exports.deleteChat = asyncHandler(async (req, res) => {
+  const { conversationId } = req.params;
 
-  if (!conversation) {
-    return res.status(404).json({
+  // Validate conversation ID format
+  if (!mongoose.Types.ObjectId.isValid(conversationId)) {
+    return res.status(400).json({
       success: false,
-      error: 'Conversation not found'
+      error: 'Invalid conversation ID format'
     });
   }
 
-  await conversation.deleteOne(); // Updated from remove() which is deprecated
+  try {
+    // Find conversation and ensure it belongs to the user
+    const conversation = await Conversation.findOne({
+      _id: conversationId,
+      user: req.user.id
+    });
 
-  res.status(200).json({
-    success: true,
-    data: {}
-  });
+    if (!conversation) {
+      return res.status(404).json({
+        success: false,
+        error: 'Conversation not found or you do not have permission to delete it'
+      });
+    }
+
+    // Delete the conversation
+    await Conversation.findByIdAndDelete(conversationId);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        message: 'Conversation deleted successfully',
+        deletedId: conversationId
+      }
+    });
+  } catch (error) {
+    console.error('Error deleting conversation:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Error deleting conversation'
+    });
+  }
 });
 
-// @desc    Send message to agent conversation
-// @route   POST /api/conversations/:id/agent-messages
-// @access  Private
-exports.sendAgentMessage = asyncHandler(async (req, res, next) => {
-  const { content } = req.body;
-  
-  if (!content) {
-    return next(new ErrorResponse('Please provide a message', 400));
-  }
-  
-  // Find conversation
-  const conversation = await Conversation.findById(req.params.id);
-  
-  if (!conversation) {
-    return next(new ErrorResponse('Conversation not found', 404));
-  }
-  
-  // Check if this is an agent conversation
-  if (!conversation.agentConfig) {
-    return next(new ErrorResponse('This is not an agent conversation', 400));
-  }
-  
-  // Get the agent configuration
-  const agentConfig = await AgentConfig.findById(conversation.agentConfig);
-  
-  if (!agentConfig) {
-    return next(new ErrorResponse('Agent configuration not found', 404));
-  }
-  
-  // Add user message to conversation
-  const userMessage = {
-    role: 'user',
-    content,
-    timestamp: Date.now()
-  };
-  
-  conversation.messages.push(userMessage);
-  
-  // Get recent messages (limit context window)
-  const maxMessages = 10;
-  const recentMessages = conversation.messages.slice(-maxMessages);
-  
-  // Gather context from knowledge sources if any
-  let contextualInfo = '';
-  
-  if (agentConfig.knowledgeSources && agentConfig.knowledgeSources.length > 0) {
-    contextualInfo = await knowledgeSourceService.getRelevantContext(content, agentConfig.knowledgeSources);
-  } else if (agentConfig.allowedDocuments && agentConfig.allowedDocuments.length > 0) {
-    // Backward compatibility with allowedDocuments
-    const documents = await Document.find({
-      _id: { $in: agentConfig.allowedDocuments },
-      user: { $in: [req.user.id, agentConfig.user] }
-    });
-    
-    if (documents.length > 0) {
-      contextualInfo = documents.map(doc => `DOCUMENT: ${doc.title}\n${doc.content}`).join('\n\n');
+// Helper functions for analytics
+function calculateAverageResponseTime(messages) {
+  let totalTime = 0;
+  let responseCount = 0;
+
+  for (let i = 1; i < messages.length; i++) {
+    if (messages[i].role === 'assistant') {
+      totalTime += messages[i].timestamp - messages[i-1].timestamp;
+      responseCount++;
     }
   }
-  
-  // Generate AI response using the agent configuration
-  const response = await openaiService.generateAgentResponse({
-    agentConfig,
-    messages: recentMessages,
-    contextualInfo
-  });
-  
-  // Add AI response to conversation
-  const assistantMessage = {
-    role: 'assistant',
-    content: response.choices[0].message.content,
-    timestamp: Date.now()
-  };
-  
-  conversation.messages.push(assistantMessage);
-  
-  // Update conversation analytics
-  conversation.analytics = conversation.analytics || {};
-  conversation.analytics.interactionCount = (conversation.analytics.interactionCount || 0) + 1;
-  
-  // Save updated conversation
-  await conversation.save();
-  
-  // Return response with the AI message and usage data for logging
-  return res.status(200).json({
-    success: true,
-    data: assistantMessage,
-    aiUsage: response.usageData
-  });
-}); 
+
+  return responseCount > 0 ? Math.round(totalTime / responseCount) : 0;
+}
+
+async function extractKeywords(messages) {
+  const text = messages.map(m => m.content).join(' ');
+  // Implement keyword extraction logic here (you can use OpenAI or other NLP services)
+  // This is a placeholder implementation
+  return ['keyword1', 'keyword2', 'keyword3'];
+}
+
+module.exports = exports;
