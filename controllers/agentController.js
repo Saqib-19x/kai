@@ -33,7 +33,7 @@ exports.createAgent = asyncHandler(async (req, res, next) => {
     isPublic: false,
     systemPrompt: 'I am a helpful AI assistant.',
     knowledgeSources: [],
-    trainingData: '', // Set as empty string instead of array
+    trainingData: null,
   });
   
   res.status(201).json({
