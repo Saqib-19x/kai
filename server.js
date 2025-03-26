@@ -41,10 +41,10 @@ if (!fs.existsSync(uploadDir)) {
 const PORT = process.env.PORT || 3000;
 
 // Include this with your other route imports
-const agentRoutes = require('./routes/agents');
-const publicRoutes = require('./routes/public');
-const voiceAgentRoutes = require('./routes/voiceAgentRoutes');
-const webhookRoutes = require('./routes/webhookRoutes');
+const agentRoutes = require('./Routes/agents');
+const publicRoutes = require('./Routes/public');
+const voiceAgentRoutes = require('./Routes/voiceAgentRoutes');
+const webhookRoutes = require('./Routes/webhookRoutes');
 
 // Add this with your other route registrations
 app.use('/api/agents', agentRoutes);
