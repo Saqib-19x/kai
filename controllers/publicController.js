@@ -4,14 +4,13 @@ const AgentConfig = require('../models/AgentConfig');
 const Conversation = require('../models/Conversation');
 const openaiService = require('../services/openaiService');
 
-// @desc    Create a public conversation with an agent
+// @desc    Create a conversation with an agent
 // @route   POST /api/public/conversations
 // @access  Public
 exports.createPublicConversation = asyncHandler(async (req, res, next) => {
-  const { agentId } = req.body;
-  
+  const agentId = req.params.agentId || req.query.agentId || req.body.agentId;
   if (!agentId) {
-    return next(new ErrorResponse('Please provide an agent ID', 400));
+    throw new ErrorResponse('Please provide an agent ID', 400);
   }
   
   // Find the agent
@@ -23,7 +22,6 @@ exports.createPublicConversation = asyncHandler(async (req, res, next) => {
   
   // Create a conversation
   const conversation = await Conversation.create({
-    title: 'Website Chat',
     agentConfig: agentId,
     messages: [
       {
@@ -40,7 +38,7 @@ exports.createPublicConversation = asyncHandler(async (req, res, next) => {
   });
 });
 
-// @desc    Send message to agent in public conversation
+// @desc    Send message to agent in conversation
 // @route   POST /api/public/conversations/:id/messages
 // @access  Public
 exports.sendPublicMessage = asyncHandler(async (req, res, next) => {

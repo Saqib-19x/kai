@@ -2,6 +2,26 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
+const apiKeySchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: true
+  },
+  key: {
+    type: String,
+    required: true,
+    unique: true
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now
+  },
+  lastUsed: {
+    type: Date,
+    default: null
+  }
+});
+
 const UserSchema = new mongoose.Schema({
   name: {
     type: String,
@@ -32,7 +52,8 @@ const UserSchema = new mongoose.Schema({
   createdAt: {
     type: Date,
     default: Date.now
-  }
+  },
+  apiKeys: [apiKeySchema]
 });
 
 // Encrypt password using bcrypt

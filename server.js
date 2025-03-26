@@ -43,10 +43,14 @@ const PORT = process.env.PORT || 3000;
 // Include this with your other route imports
 const agentRoutes = require('./routes/agents');
 const publicRoutes = require('./routes/public');
+const voiceAgentRoutes = require('./routes/voiceAgentRoutes');
+const webhookRoutes = require('./routes/webhookRoutes');
 
 // Add this with your other route registrations
 app.use('/api/agents', agentRoutes);
 app.use('/api/public', publicRoutes);
+app.use('/api/voice-agents', voiceAgentRoutes);
+app.use('/api/webhooks', webhookRoutes);
 
 // Serve embed script statically
 app.use(express.static('public'));

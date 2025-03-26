@@ -34,6 +34,34 @@ class TextToSpeechService {
       throw new Error(`Failed to convert text to speech: ${error.message}`);
     }
   }
+
+  async generateSpeech(text, voiceProfile, callSid) {
+    // Select provider based on quality/latency needs
+    switch(voiceProfile.provider) {
+      case 'elevenlabs': // Most natural, higher latency
+        return await this.generateElevenLabsSpeech(text, voiceProfile, callSid);
+        
+      case 'playht': // Good balance of quality/speed
+        return await this.generatePlayHTSpeech(text, voiceProfile, callSid);
+        
+      case 'azure': // Very low latency, good quality
+        return await this.generateAzureSpeech(text, voiceProfile, callSid);
+        
+      default:
+        return await this.generateAWSSpeech(text, voiceProfile, callSid);
+    }
+  }
+
+  // Stream TTS output directly to call
+  async streamSpeechToCall(callSid, textChunks, voiceProfile) {
+    // Use techniques like sentence-based streaming
+    // Generate TTS for each chunk while previous chunk is being played
+    
+    for (const chunk of textChunks) {
+      const audioStream = await this.generateSpeech(chunk, voiceProfile);
+      await this.streamAudioToCall(callSid, audioStream);
+    }
+  }
 }
 
 module.exports = new TextToSpeechService(); 

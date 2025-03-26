@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const asyncHandler = require('./async');
 const User = require('../models/User');
+const ErrorResponse = require('../utils/errorResponse');
 
 // Protect routes
 exports.protect = asyncHandler(async (req, res, next) => {
@@ -54,4 +55,34 @@ exports.authorize = (...roles) => {
     }
     next();
   };
-}; 
+};
+
+exports.authenticateApiKey = asyncHandler(async (req, res, next) => {
+  const apiKey = req.header('X-API-Key');
+
+  if (!apiKey) {
+    return next(new ErrorResponse('API key is missing', 401));
+  }
+
+  try {
+    // Find user with this API key
+    const user = await User.findOne({
+      'apiKeys.key': apiKey
+    });
+
+    if (!user) {
+      return next(new ErrorResponse('Invalid API key', 401));
+    }
+
+    // Update last used timestamp
+    const userApiKey = user.apiKeys.find(k => k.key === apiKey);
+    userApiKey.lastUsed = new Date();
+    await user.save();
+
+    // Add user to request
+    req.user = user;
+    next();
+  } catch (err) {
+    return next(new ErrorResponse('Not authorized to access this route', 401));
+  }
+}); 

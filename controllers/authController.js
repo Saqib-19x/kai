@@ -1,5 +1,6 @@
 const User = require('../models/User');
 const asyncHandler = require('../middleware/async');
+const crypto = require('crypto');
 
 // @desc    Register a new user
 // @route   POST /api/auth/register
@@ -107,4 +108,83 @@ const sendTokenResponse = (user, statusCode, res) => {
       token,
       role: user.role
     });
-}; 
+};
+
+// @desc    Generate API key
+// @route   POST /api/auth/api-keys
+// @access  Private
+exports.generateApiKey = asyncHandler(async (req, res, next) => {
+  const { name } = req.body;
+  
+  // Generate API key with prefix for better identification
+  const prefix = 'pk_';
+  const randomKey = crypto.randomBytes(24).toString('hex');
+  const apiKey = `${prefix}${randomKey}`;
+  
+  // Add API key to user's API keys
+  const user = await User.findById(req.user.id);
+  
+  // Limit number of active API keys (optional)
+  if (user.apiKeys.length >= 5) {
+    return res.status(400).json({
+      success: false,
+      error: 'Maximum number of API keys (5) reached. Please revoke an existing key first.'
+    });
+  }
+
+  user.apiKeys.push({
+    name: name || 'API Key',
+    key: apiKey,
+    createdAt: new Date(),
+    lastUsed: null
+  });
+
+  await user.save();
+
+  res.status(201).json({
+    success: true,
+    data: {
+      name: name || 'API Key',
+      key: apiKey,
+      createdAt: new Date()
+    }
+  });
+});
+
+// @desc    List all API keys
+// @route   GET /api/auth/api-keys
+// @access  Private
+exports.listApiKeys = asyncHandler(async (req, res, next) => {
+  const user = await User.findById(req.user.id);
+  
+  res.status(200).json({
+    success: true,
+    count: user.apiKeys.length,
+    data: user.apiKeys.map(apiKey => ({
+      id: apiKey._id,
+      name: apiKey.name,
+      createdAt: apiKey.createdAt,
+      lastUsed: apiKey.lastUsed,
+      // Only show last 4 characters of the key
+      keyPreview: `pk_...${apiKey.key.slice(-4)}`
+    }))
+  });
+});
+
+// @desc    Revoke API key
+// @route   DELETE /api/auth/api-keys/:keyId
+// @access  Private
+exports.revokeApiKey = asyncHandler(async (req, res, next) => {
+  const user = await User.findById(req.user.id);
+  
+  user.apiKeys = user.apiKeys.filter(
+    key => key._id.toString() !== req.params.keyId
+  );
+  
+  await user.save();
+
+  res.status(200).json({
+    success: true,
+    data: {}
+  });
+}); 
