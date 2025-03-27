@@ -63,13 +63,24 @@ exports.getAgents = asyncHandler(async (req, res, next) => {
       ]
     });
   }
-  
-  // Add population for user details if admin
-  if (req.user.role === 'admin') {
+
+  // Handle field selection through select parameter
+  if (req.query.select) {
+    const fields = req.query.select.split(',').join(' ');
+    query = query.select(fields);
+  }
+
+  // Add population for user details if requested or if admin
+  if (req.query.populate === 'user' || req.user.role === 'admin') {
     query = query.populate({
       path: 'user',
       select: 'name email'
     });
+  }
+
+  // Add population for knowledge sources if requested
+  if (req.query.populate === 'knowledge' || req.query.populate === 'all') {
+    query = query.populate('knowledgeSources');
   }
   
   const agents = await query;
