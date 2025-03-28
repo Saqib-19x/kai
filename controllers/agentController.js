@@ -277,6 +277,7 @@ exports.trainAgent = asyncHandler(async (req, res, next) => {
 // @route   POST /api/agents/:id/converse
 // @access  Private
 exports.startConversation = asyncHandler(async (req, res, next) => {
+  const { message } = req.body;
   const agent = await AgentConfig.findById(req.params.id);
   
   if (!agent) {
@@ -287,23 +288,115 @@ exports.startConversation = asyncHandler(async (req, res, next) => {
   if (agent.user.toString() !== req.user.id && !agent.isPublic && req.user.role !== 'admin') {
     return next(new ErrorResponse(`User not authorized to use this agent`, 401));
   }
-  
-  // Create a new conversation with this agent
-  const conversation = await Conversation.create({
-    title: `Conversation with ${agent.name}`,
-    user: req.user.id,
-    agentConfig: agent._id,
-    messages: [{
+
+  try {
+    // Generate title from the first message or use a default
+    const title = message 
+      ? (message.length > 30 ? `${message.substring(0, 30)}...` : message)
+      : `Conversation with ${agent.name}`;
+    
+    // Prepare system message with complete prompt
+    const systemMessage = {
       role: 'system',
-      content: agent.generateCompleteSystemPrompt(),
+      content: agent.systemPrompt || 'You are a helpful AI assistant.',
       timestamp: Date.now()
-    }]
-  });
-  
-  res.status(201).json({
-    success: true,
-    data: conversation
-  });
+    };
+    
+    // Initialize conversation with system message
+    const conversation = new Conversation({
+      title: title,
+      user: req.user.id,
+      agentConfig: agent._id,
+      messages: [systemMessage],
+      analytics: {
+        startTime: Date.now(),
+        messageCount: 1,  // Count only the system message for now
+        lastInteraction: Date.now()
+      }
+    });
+    
+    // If there's an initial message, process it and add AI response
+    if (message) {
+      // Get relevant context from knowledge base if available
+      let contextualPrompt = systemMessage.content;
+      
+      if (agent.knowledgeBase && agent.knowledgeBase.documents && agent.knowledgeBase.documents.length > 0) {
+        const relevantContext = await exports.getRelevantContext(agent._id, message);
+        
+        if (relevantContext) {
+          contextualPrompt += `\n\nContext information for this query:\n${relevantContext}`;
+        }
+      }
+      
+      // Add user message to conversation
+      conversation.messages.push({
+        role: 'user',
+        content: message,
+        timestamp: Date.now()
+      });
+      
+      conversation.analytics.messageCount++;
+      
+      // Get AI response
+      const messages = [
+        { role: 'system', content: contextualPrompt },
+        { role: 'user', content: message }
+      ];
+      
+      const response = await openaiService.createChatCompletion({
+        model: agent.model || 'gpt-3.5-turbo',
+        messages,
+        temperature: agent.temperature || 0.7,
+        max_tokens: agent.maxTokens || 1000
+      });
+      
+      if (response && response.choices && response.choices.length > 0) {
+        // Add AI response to conversation
+        conversation.messages.push({
+          role: 'assistant',
+          content: response.choices[0].message.content,
+          timestamp: Date.now()
+        });
+        
+        conversation.analytics.messageCount++;
+      }
+    }
+    
+    // Save conversation
+    await conversation.save();
+    
+    // Format the response
+    const formattedResponse = {
+      success: true,
+      data: {
+        conversation: {
+          id: conversation._id,
+          title: conversation.title,
+          agent: {
+            id: agent._id,
+            name: agent.name,
+            model: agent.model,
+            expertise: agent.expertise || []
+          },
+          messages: conversation.messages
+            .filter(msg => msg.role !== 'system') // Exclude system message from client response
+            .map(msg => ({
+              role: msg.role,
+              content: msg.content,
+              timestamp: msg.timestamp
+            })),
+          createdAt: conversation.createdAt,
+          updatedAt: conversation.updatedAt
+        }
+      }
+    };
+    
+    res.status(201).json(formattedResponse);
+    
+  } catch (error) {
+    console.error('Error starting conversation:', error);
+    return next(new ErrorResponse(`Failed to start conversation: ${error.message}`, 500));
+  }
 });
 
 // @desc    Update agent embed settings
@@ -449,6 +542,36 @@ exports.patchAgent = asyncHandler(async (req, res, next) => {
     });
   }
 });
+
+// Add this helper function before the getRelevantContext function
+/**
+ * Calculate cosine similarity between two vectors
+ * @param {Array} vecA - First vector
+ * @param {Array} vecB - Second vector
+ * @returns {number} - Cosine similarity score between 0 and 1
+ */
+const calculateCosineSimilarity = (vecA, vecB) => {
+  if (!vecA || !vecB || vecA.length !== vecB.length) {
+    console.error('Invalid vectors provided for similarity calculation');
+    return 0;
+  }
+  
+  try {
+    // Calculate dot product
+    const dotProduct = vecA.reduce((sum, val, i) => sum + val * vecB[i], 0);
+    
+    // Calculate magnitudes
+    const magnitudeA = Math.sqrt(vecA.reduce((sum, val) => sum + val * val, 0));
+    const magnitudeB = Math.sqrt(vecB.reduce((sum, val) => sum + val * val, 0));
+    
+    // Calculate cosine similarity
+    if (magnitudeA === 0 || magnitudeB === 0) return 0;
+    return dotProduct / (magnitudeA * magnitudeB);
+  } catch (error) {
+    console.error('Error calculating cosine similarity:', error);
+    return 0;
+  }
+};
 
 // Export the getRelevantContext function
 exports.getRelevantContext = asyncHandler(async (agentId, query) => {

@@ -81,8 +81,10 @@ Instructions:
       maxTokens: 1000
     });
 
-    // Generate a short title from the first message
-    const chatTitle = generateChatTitle(message);
+    // Simple title generation from the first few words of the message
+    const chatTitle = message.length > 30 
+      ? `${message.substring(0, 30)}...` 
+      : message;
 
     // Create conversation with auto-generated title
     const conversation = new Conversation({
