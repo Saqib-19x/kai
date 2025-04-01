@@ -2,6 +2,7 @@ const express = require('express');
 const dotenv = require('dotenv');
 const mongoose = require('mongoose');
 const path = require('path');
+const http = require('http');
 
 // Load environment variables
 dotenv.config();
@@ -37,9 +38,6 @@ if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-// Set port
-const PORT = process.env.PORT || 3000;
-
 // Include this with your other route imports
 const agentRoutes = require('./Routes/agents');
 const publicRoutes = require('./Routes/public');
@@ -55,14 +53,37 @@ app.use('/api/webhooks', webhookRoutes);
 // Serve embed script statically
 app.use(express.static('public'));
 
-// Start server
-const server = app.listen(PORT, () => {
-  console.log(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
-});
+// Start the server with port fallback
+function startServer(port) {
+  const defaultPort = port || process.env.PORT || 3000;
+  
+  const server = http.createServer(app);
+  
+  server.listen(defaultPort);
+  
+  server.on('error', (e) => {
+    if (e.code === 'EADDRINUSE') {
+      console.log(`Port ${defaultPort} is busy, trying ${defaultPort + 1}...`);
+      startServer(defaultPort + 1);
+    } else {
+      console.error(e);
+    }
+  });
+  
+  server.on('listening', () => {
+    console.log(`Server running on port ${server.address().port}`);
+  });
+  
+  return server;
+}
 
-// Handle unhandled promise rejections
-process.on('unhandledRejection', (err, promise) => {
-  console.log(`Error: ${err.message}`);
-  // Close server and exit process
-  server.close(() => process.exit(1));
+const server = startServer();
+
+// Handle graceful shutdown
+process.on('unhandledRejection', (err) => {
+  console.log('UNHANDLED REJECTION! Shutting down...');
+  console.log(err.name, err.message);
+  server.close(() => {
+    process.exit(1);
+  });
 });

@@ -11,7 +11,13 @@ const openaiService = require('../services/openaiService');
 exports.createAgent = asyncHandler(async (req, res, next) => {
   // Check if name is provided
   if (!req.body.name) {
-    return next(new ErrorResponse('Please provide a name for the agent', 400));
+    return res.status(400).json({
+      success: false,
+      error: {
+        message: 'Please provide a name for the agent',
+        statusCode: 400
+      }
+    });
   }
 
   // Add user to request body
@@ -21,7 +27,13 @@ exports.createAgent = asyncHandler(async (req, res, next) => {
   if (req.user.role !== 'admin') {
     const agentsCount = await AgentConfig.countDocuments({ user: req.user.id });
     if (agentsCount >= 5) {
-      return next(new ErrorResponse('You have reached the maximum number of agents (5)', 400));
+      return res.status(400).json({
+        success: false,
+        error: {
+          message: 'You have reached the maximum number of agents (5)',
+          statusCode: 400
+        }
+      });
     }
   }
   
@@ -96,21 +108,73 @@ exports.getAgents = asyncHandler(async (req, res, next) => {
 // @route   GET /api/agents/:id
 // @access  Private
 exports.getAgent = asyncHandler(async (req, res, next) => {
-  const agent = await AgentConfig.findById(req.params.id);
+  // First validate if the ID is a valid MongoDB ObjectId
+  if (!req.params.id.match(/^[0-9a-fA-F]{24}$/)) {
+    return res.status(400).json({
+      success: false,
+      error: {
+        message: `Invalid agent ID format: ${req.params.id}`,
+        statusCode: 400
+      }
+    });
+  }
+
+  let query = AgentConfig.findById(req.params.id);
+  
+  // Always populate the user field for authorization check
+  query = query.populate('user', 'id');
+  
+  // Handle field selection if select parameter is provided
+  if (req.query.select) {
+    const fields = req.query.select.split(',').join(' ');
+    query = query.select(fields);
+  }
+
+  try {
+    const agent = await query;
   
   if (!agent) {
-    return next(new ErrorResponse(`Agent not found with id of ${req.params.id}`, 404));
+      return res.status(404).json({
+        success: false,
+        error: {
+          message: `Agent not found with id of ${req.params.id}`,
+          statusCode: 404
+        }
+      });
   }
   
   // Make sure user owns the agent or agent is public
-  if (agent.user.toString() !== req.user.id && !agent.isPublic && req.user.role !== 'admin') {
-    return next(new ErrorResponse(`User not authorized to access this agent`, 401));
-  }
-  
-  res.status(200).json({
+    if (agent.user._id.toString() !== req.user.id && !agent.isPublic && req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: {
+          message: 'User not authorized to access this agent',
+          statusCode: 403
+        }
+      });
+    }
+    
+    // If we're using field selection, ensure we don't expose user details
+    const responseData = agent.toObject();
+    if (req.query.select && !req.query.select.includes('user')) {
+      delete responseData.user;
+    }
+    
+    return res.status(200).json({
     success: true,
-    data: agent
-  });
+      data: responseData
+    });
+
+  } catch (error) {
+    // Explicitly handle any other errors with JSON response
+    return res.status(500).json({
+      success: false,
+      error: {
+        message: `Error retrieving agent: ${error.message}`,
+        statusCode: 500
+      }
+    });
+  }
 });
 
 // @desc    Update agent
@@ -659,243 +723,461 @@ exports.getAgentAnalytics = asyncHandler(async (req, res, next) => {
   const agent = await AgentConfig.findById(req.params.id);
   
   if (!agent) {
-    return next(new ErrorResponse(`Agent not found with id of ${req.params.id}`, 404));
+    return res.status(404).json({
+      success: false,
+      error: {
+        message: `Agent not found with id of ${req.params.id}`,
+        statusCode: 404
+      }
+    });
   }
   
   // Check authorization
   if (agent.user.toString() !== req.user.id && req.user.role !== 'admin') {
-    return next(new ErrorResponse(`User not authorized to view this agent's analytics`, 401));
+    return res.status(403).json({
+      success: false,
+      error: {
+        message: 'User not authorized to view this agent\'s analytics',
+        statusCode: 403
+      }
+    });
   }
 
   try {
-    // Get all conversations for this agent
     const conversations = await Conversation.find({ agentConfig: agent._id });
-    
-    // Basic stats
-    const totalConversations = conversations.length;
-    const totalMessages = conversations.reduce((sum, conv) => 
-      sum + conv.messages.filter(msg => msg.role !== 'system').length, 0
+    const timeRange = req.query.timeRange || '30d';
+    const endDate = new Date();
+    const startDate = getStartDate(timeRange);
+
+    // Filter conversations by time range
+    const filteredConversations = conversations.filter(conv => 
+      new Date(conv.createdAt) >= startDate && new Date(conv.createdAt) <= endDate
     );
 
-    // Calculate average messages per conversation
-    const avgMessagesPerConversation = totalConversations > 0 
-      ? (totalMessages / totalConversations).toFixed(2) 
-      : 0;
-
-    // Get conversation duration stats
-    const durationStats = conversations.map(conv => {
-      const messages = conv.messages.filter(msg => msg.role !== 'system');
-      if (messages.length < 2) return 0;
-      return new Date(messages[messages.length - 1].timestamp) - new Date(messages[0].timestamp);
-    });
-
-    const avgDuration = durationStats.length > 0 
-      ? (durationStats.reduce((a, b) => a + b, 0) / durationStats.length / 1000).toFixed(2) 
-      : 0;
-
-    // Get user message patterns
-    const userMessages = conversations.flatMap(conv => 
-      conv.messages.filter(msg => msg.role === 'user')
-    );
-
-    // Analyze message lengths
-    const messageLengths = userMessages.map(msg => msg.content.length);
-    const avgMessageLength = messageLengths.length > 0 
-      ? (messageLengths.reduce((a, b) => a + b, 0) / messageLengths.length).toFixed(2) 
-      : 0;
-
-    // Time-based analytics
-    const timeAnalytics = {
-      hourly: Array(24).fill(0),
-      daily: Array(7).fill(0),
-      monthly: Array(12).fill(0)
-    };
-
-    conversations.forEach(conv => {
-      const date = new Date(conv.createdAt);
-      timeAnalytics.hourly[date.getHours()]++;
-      timeAnalytics.daily[date.getDay()]++;
-      timeAnalytics.monthly[date.getMonth()]++;
-    });
-
-    // Language detection (basic implementation)
-    const languagePatterns = {
-      english: /^[a-zA-Z\s.,!?]+$/,
-      containsNonLatin: /[^\u0000-\u007F]/,
-      containsCode: /(function|const|let|var|if|for|while|return|import|export|class)/
-    };
-
-    const languageStats = userMessages.reduce((stats, msg) => {
-      if (languagePatterns.english.test(msg.content)) stats.english++;
-      if (languagePatterns.containsNonLatin.test(msg.content)) stats.nonLatin++;
-      if (languagePatterns.containsCode.test(msg.content)) stats.codeRelated++;
-      return stats;
-    }, { english: 0, nonLatin: 0, codeRelated: 0 });
-
-    // Response time analytics
-    const responseTimes = [];
-    conversations.forEach(conv => {
-      const messages = conv.messages.filter(msg => msg.role !== 'system');
-      for (let i = 1; i < messages.length; i++) {
-        if (messages[i].role === 'assistant' && messages[i-1].role === 'user') {
-          responseTimes.push(
-            new Date(messages[i].timestamp) - new Date(messages[i-1].timestamp)
-          );
-        }
+    // Calculate existing analytics
+    const existingAnalytics = {
+      agentInfo: {
+        name: agent.name,
+        model: agent.model,
+        expertise: agent.expertise,
+        personality: agent.personality,
+        isPublic: agent.isPublic,
+        createdAt: agent.createdAt
+      },
+      conversationStats: {
+        total: conversations.length,
+        totalMessages: calculateTotalMessages(conversations),
+        avgMessagesPerConversation: calculateAvgMessages(conversations),
+        avgDuration: calculateAvgDuration(conversations),
+        avgMessageLength: calculateAvgMessageLength(conversations),
+        avgResponseTime: calculateAvgResponseTime(conversations)
+      },
+      timeAnalytics: getTimeAnalytics(conversations),
+      languageAnalysis: getLanguageAnalysis(conversations),
+      emotionAnalytics: getEmotionAnalytics(conversations),
+      knowledgeBaseStats: {
+        documentCount: agent.knowledgeBase?.documents?.length || 0,
+        lastUpdated: agent.knowledgeBase?.lastUpdated
       }
-    });
-
-    const avgResponseTime = responseTimes.length > 0 
-      ? (responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length / 1000).toFixed(2) 
-      : 0;
-
-    // Add emotion analysis
-    const emotionAnalytics = {
-      overall: {
-        angry: 0,
-        happy: 0,
-        sad: 0,
-        urgent: 0,
-        confused: 0,
-        curious: 0,
-        neutral: 0
-      },
-      trends: {
-        hourly: Array(24).fill().map(() => ({})),
-        daily: Array(7).fill().map(() => ({})),
-        monthly: Array(12).fill().map(() => ({}))
-      },
-      intensityDistribution: {
-        low: 0,
-        medium: 0,
-        high: 0
-      },
-      emotionalConversations: []
     };
 
-    // Analyze emotions in conversations
-    conversations.forEach(conv => {
-      const conversationEmotions = {
-        conversationId: conv._id,
-        timeline: [],
-        overallMood: null,
-        intensityScore: 0
-      };
+    // Calculate new dashboard analytics
+    const dashboardAnalytics = {
+      engagementOverview: getEngagementData(filteredConversations, timeRange),
+      responseAnalysis: getResponseAnalysis(filteredConversations),
+      recentConversations: getRecentConversations(filteredConversations),
+      sentimentAnalysis: getSentimentAnalysis(filteredConversations, timeRange)
+    };
 
-      const userMessages = conv.messages.filter(msg => msg.role === 'user');
-      
-      userMessages.forEach(msg => {
-        const analysis = analyzeEmotion(msg.content);
-        
-        // Update overall stats
-        emotionAnalytics.overall[analysis.dominantEmotion]++;
-        
-        // Track emotion timeline
-        conversationEmotions.timeline.push({
-          timestamp: msg.timestamp,
-          emotion: analysis.dominantEmotion,
-          intensity: analysis.intensity
-        });
+    // Get requested fields from query params or body
+    let requestedFields = [];
+    if (req.query.fields) {
+      requestedFields = req.query.fields.split(',').map(field => field.trim());
+    } else if (req.body.fields && Array.isArray(req.body.fields)) {
+      requestedFields = req.body.fields;
+    }
 
-        // Update intensity distribution
-        if (analysis.intensity <= 1) emotionAnalytics.intensityDistribution.low++;
-        else if (analysis.intensity <= 3) emotionAnalytics.intensityDistribution.medium++;
-        else emotionAnalytics.intensityDistribution.high++;
+    // Combine all analytics
+    const allAnalytics = {
+      ...existingAnalytics,
+      dashboard: dashboardAnalytics
+    };
 
-        // Update time-based trends
-        const msgDate = new Date(msg.timestamp);
-        const hour = msgDate.getHours();
-        const day = msgDate.getDay();
-        const month = msgDate.getMonth();
+    // If specific fields were requested, filter the response
+    const responseData = requestedFields.length > 0
+      ? filterRequestedFields(allAnalytics, requestedFields)
+      : allAnalytics;
 
-        emotionAnalytics.trends.hourly[hour][analysis.dominantEmotion] = 
-          (emotionAnalytics.trends.hourly[hour][analysis.dominantEmotion] || 0) + 1;
-        emotionAnalytics.trends.daily[day][analysis.dominantEmotion] = 
-          (emotionAnalytics.trends.daily[day][analysis.dominantEmotion] || 0) + 1;
-        emotionAnalytics.trends.monthly[month][analysis.dominantEmotion] = 
-          (emotionAnalytics.trends.monthly[month][analysis.dominantEmotion] || 0) + 1;
-      });
-
-      // Calculate overall conversation mood
-      if (conversationEmotions.timeline.length > 0) {
-        const moodCounts = conversationEmotions.timeline.reduce((acc, item) => {
-          acc[item.emotion] = (acc[item.emotion] || 0) + 1;
-          return acc;
-        }, {});
-
-        conversationEmotions.overallMood = Object.entries(moodCounts)
-          .reduce((a, b) => (moodCounts[a] > moodCounts[b] ? a : b))[0];
-        
-        conversationEmotions.intensityScore = 
-          conversationEmotions.timeline.reduce((sum, item) => sum + item.intensity, 0) / 
-          conversationEmotions.timeline.length;
-
-        emotionAnalytics.emotionalConversations.push(conversationEmotions);
-      }
-    });
-
-    // Add emotion analytics to the response
     res.status(200).json({
       success: true,
-      data: {
-        agentInfo: {
-          name: agent.name,
-          model: agent.model,
-          expertise: agent.expertise,
-          personality: agent.personality,
-          isPublic: agent.isPublic,
-          createdAt: agent.createdAt
-        },
-        conversationStats: {
-          total: totalConversations,
-          totalMessages,
-          avgMessagesPerConversation: parseFloat(avgMessagesPerConversation),
-          avgConversationDuration: parseFloat(avgDuration), // in seconds
-          avgMessageLength: parseFloat(avgMessageLength), // in characters
-          avgResponseTime: parseFloat(avgResponseTime) // in seconds
-        },
-        timeAnalytics: {
-          hourlyDistribution: timeAnalytics.hourly,
-          dailyDistribution: timeAnalytics.daily,
-          monthlyDistribution: timeAnalytics.monthly
-        },
-        languageAnalysis: {
-          english: languageStats.english,
-          nonLatin: languageStats.nonLatin,
-          codeRelated: languageStats.codeRelated,
-          totalMessages: userMessages.length
-        },
-        knowledgeBaseStats: {
-          documentCount: agent.knowledgeBase?.documents?.length || 0,
-          lastUpdated: agent.knowledgeBase?.lastUpdated
-        },
-        emotionAnalytics: {
-          overall: emotionAnalytics.overall,
-          trends: emotionAnalytics.trends,
-          intensityDistribution: emotionAnalytics.intensityDistribution,
-          // Get top 5 most emotional conversations
-          topEmotionalConversations: emotionAnalytics.emotionalConversations
-            .sort((a, b) => b.intensityScore - a.intensityScore)
-            .slice(0, 5)
-            .map(conv => ({
-              conversationId: conv.conversationId,
-              overallMood: conv.overallMood,
-              intensityScore: conv.intensityScore,
-              emotionChanges: conv.timeline.length - 1
-            })),
-          emotionProgressions: emotionAnalytics.emotionalConversations
-            .filter(conv => conv.timeline.length > 1)
-            .map(conv => ({
-              conversationId: conv.conversationId,
-              startEmotion: conv.timeline[0].emotion,
-              endEmotion: conv.timeline[conv.timeline.length - 1].emotion,
-              improved: conv.timeline[0].emotion === 'angry' && 
-                       conv.timeline[conv.timeline.length - 1].emotion === 'happy'
-            }))
-        }
+      data: responseData
+    });
+
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: {
+        message: `Error generating analytics: ${error.message}`,
+        statusCode: 500
       }
     });
-  } catch (error) {
-    return next(new ErrorResponse('Error generating analytics', 500));
   }
-}); 
+});
+
+// Helper function to filter requested fields
+const filterRequestedFields = (analytics, fields) => {
+  const filtered = {};
+  fields.forEach(field => {
+    if (field in analytics) {
+      filtered[field] = analytics[field];
+    }
+  });
+  return filtered;
+};
+
+// Helper function to get start date based on time range
+const getStartDate = (timeRange) => {
+  const now = new Date();
+  switch (timeRange) {
+    case '24h': return new Date(now - 24 * 60 * 60 * 1000);
+    case '7d': return new Date(now - 7 * 24 * 60 * 60 * 1000);
+    case '30d': return new Date(now - 30 * 24 * 60 * 60 * 1000);
+    case '90d': return new Date(now - 90 * 24 * 60 * 60 * 1000);
+    default: return new Date(now - 30 * 24 * 60 * 60 * 1000);
+  }
+};
+
+// Dashboard helper functions
+const getResponseTimeDistribution = (responseTimes) => {
+  const distribution = [0, 0, 0, 0, 0]; // [<1s, 1-5s, 5-10s, 10-30s, >30s]
+  
+  responseTimes.forEach(time => {
+    const seconds = time / 1000;
+    if (seconds < 1) distribution[0]++;
+    else if (seconds < 5) distribution[1]++;
+    else if (seconds < 10) distribution[2]++;
+    else if (seconds < 30) distribution[3]++;
+    else distribution[4]++;
+  });
+
+  return distribution;
+};
+
+const getResponseTimeTimeSeries = (conversations) => {
+  const timeSeriesData = [];
+  
+  conversations.forEach(conv => {
+    const messages = conv.messages;
+    for (let i = 1; i < messages.length; i++) {
+      if (messages[i].role === 'assistant' && messages[i-1].role === 'user') {
+        const responseTime = new Date(messages[i].timestamp) - new Date(messages[i-1].timestamp);
+        timeSeriesData.push({
+          timestamp: messages[i].timestamp,
+          responseTime: responseTime / 1000 // Convert to seconds
+        });
+      }
+    }
+  });
+
+  // Sort by timestamp
+  return timeSeriesData.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+};
+
+const getEngagementData = (conversations, timeRange) => {
+  const timeIntervals = getTimeIntervals(timeRange);
+  
+  // Initialize data points for the chart
+  const chartData = timeIntervals.map(interval => ({
+    timestamp: interval,
+    conversationCount: 0,
+    messageCount: 0,
+    uniqueUsers: new Set()
+  }));
+
+  // Populate data points
+  conversations.forEach(conv => {
+    const convDate = new Date(conv.createdAt);
+    const intervalIndex = findIntervalIndex(convDate, timeIntervals);
+    if (intervalIndex !== -1) {
+      chartData[intervalIndex].conversationCount++;
+      chartData[intervalIndex].messageCount += conv.messages.length;
+      chartData[intervalIndex].uniqueUsers.add(conv.user.toString());
+    }
+  });
+
+  // Format for response
+  return {
+    hasData: conversations.length > 0,
+    timeRange,
+    chartData: chartData.map(point => ({
+      timestamp: point.timestamp,
+      conversationCount: point.conversationCount,
+      messageCount: point.messageCount,
+      uniqueUsers: point.uniqueUsers.size
+    })),
+    summary: {
+      totalConversations: conversations.length,
+      totalMessages: conversations.reduce((sum, conv) => sum + conv.messages.length, 0),
+      totalUniqueUsers: new Set(conversations.map(conv => conv.user.toString())).size
+    }
+  };
+};
+
+const getTimeIntervals = (timeRange) => {
+  const intervals = [];
+  const now = new Date();
+  const intervalSize = timeRange === '24h' ? 3600000 : // 1 hour
+                      timeRange === '7d' ? 86400000 : // 1 day
+                      timeRange === '30d' ? 86400000 : // 1 day
+                      7200000; // 2 hours default
+
+  for (let time = getStartDate(timeRange); time <= now; time = new Date(time.getTime() + intervalSize)) {
+    intervals.push(new Date(time));
+  }
+  return intervals;
+};
+
+const findIntervalIndex = (date, intervals) => {
+  for (let i = 0; i < intervals.length - 1; i++) {
+    if (date >= intervals[i] && date < intervals[i + 1]) {
+      return i;
+    }
+  }
+  return intervals.length - 1;
+};
+
+const getResponseAnalysis = (conversations) => {
+  const responseTimes = [];
+  conversations.forEach(conv => {
+    const messages = conv.messages;
+    for (let i = 1; i < messages.length; i++) {
+      if (messages[i].role === 'assistant' && messages[i-1].role === 'user') {
+        responseTimes.push(
+          new Date(messages[i].timestamp) - new Date(messages[i-1].timestamp)
+        );
+      }
+    }
+  });
+
+  return {
+    hasData: responseTimes.length > 0,
+    averageResponseTime: responseTimes.length ? 
+      Math.round(responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length / 1000) : 0,
+    responseTimeDistribution: {
+      labels: ['<1s', '1-5s', '5-10s', '10-30s', '>30s'],
+      data: getResponseTimeDistribution(responseTimes)
+    },
+    timeSeriesData: getResponseTimeTimeSeries(conversations)
+  };
+};
+
+const getRecentConversations = (conversations) => {
+  return {
+    hasData: conversations.length > 0,
+    conversations: conversations
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+      .slice(0, 10)
+      .map(conv => ({
+        id: conv._id,
+        title: conv.title || `Conversation ${conv._id}`,
+        timestamp: conv.createdAt,
+        messageCount: conv.messages.length,
+        duration: conv.messages.length > 1 ? 
+          new Date(conv.messages[conv.messages.length - 1].timestamp) - 
+          new Date(conv.messages[0].timestamp) : 0,
+        sentiment: analyzeSentiment(conv.messages)
+      }))
+  };
+};
+
+const getSentimentAnalysis = (conversations, timeRange) => {
+  const timeIntervals = getTimeIntervals(timeRange);
+  const sentimentData = timeIntervals.map(interval => ({
+    timestamp: interval,
+    positive: 0,
+    neutral: 0,
+    negative: 0
+  }));
+
+  conversations.forEach(conv => {
+    const sentiment = analyzeSentiment(conv.messages);
+    const intervalIndex = findIntervalIndex(new Date(conv.createdAt), timeIntervals);
+    if (intervalIndex !== -1) {
+      sentimentData[intervalIndex][sentiment]++;
+    }
+  });
+
+  return {
+    hasData: conversations.length > 0,
+    timeRange,
+    sentimentTrend: sentimentData,
+    overall: {
+      positive: sentimentData.reduce((sum, point) => sum + point.positive, 0),
+      neutral: sentimentData.reduce((sum, point) => sum + point.neutral, 0),
+      negative: sentimentData.reduce((sum, point) => sum + point.negative, 0)
+    }
+  };
+};
+
+const analyzeSentiment = (messages) => {
+  const userMessages = messages.filter(msg => msg.role === 'user');
+  let positiveCount = 0;
+  let negativeCount = 0;
+
+  const positiveWords = /\b(good|great|excellent|amazing|thank|happy|helpful|perfect|love)\b/i;
+  const negativeWords = /\b(bad|poor|terrible|awful|unhappy|wrong|hate|confused|difficult)\b/i;
+
+  userMessages.forEach(msg => {
+    if (positiveWords.test(msg.content)) positiveCount++;
+    if (negativeWords.test(msg.content)) negativeCount++;
+  });
+
+  return positiveCount > negativeCount ? 'positive' :
+         negativeCount > positiveCount ? 'negative' : 'neutral';
+};
+
+// Helper functions for existing analytics calculations
+const calculateTotalMessages = (conversations) => {
+  return conversations.reduce((sum, conv) => 
+    sum + conv.messages.filter(msg => msg.role !== 'system').length, 0
+  );
+};
+
+const calculateAvgMessages = (conversations) => {
+  const totalMessages = calculateTotalMessages(conversations);
+  return conversations.length > 0 
+    ? (totalMessages / conversations.length).toFixed(2)
+    : 0;
+};
+
+const calculateAvgDuration = (conversations) => {
+  const durations = conversations.map(conv => {
+    const messages = conv.messages.filter(msg => msg.role !== 'system');
+    if (messages.length < 2) return 0;
+    return new Date(messages[messages.length - 1].timestamp) - new Date(messages[0].timestamp);
+  });
+
+  return durations.length > 0
+    ? (durations.reduce((a, b) => a + b, 0) / durations.length / 1000).toFixed(2)
+    : 0;
+};
+
+const calculateAvgMessageLength = (conversations) => {
+  const userMessages = conversations.flatMap(conv => 
+    conv.messages.filter(msg => msg.role === 'user')
+  );
+  
+  const messageLengths = userMessages.map(msg => msg.content.length);
+  return messageLengths.length > 0
+    ? (messageLengths.reduce((a, b) => a + b, 0) / messageLengths.length).toFixed(2)
+    : 0;
+};
+
+const calculateAvgResponseTime = (conversations) => {
+  const responseTimes = [];
+  conversations.forEach(conv => {
+    const messages = conv.messages.filter(msg => msg.role !== 'system');
+    for (let i = 1; i < messages.length; i++) {
+      if (messages[i].role === 'assistant' && messages[i-1].role === 'user') {
+        responseTimes.push(
+          new Date(messages[i].timestamp) - new Date(messages[i-1].timestamp)
+        );
+      }
+    }
+  });
+  
+  return responseTimes.length > 0 
+    ? (responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length / 1000).toFixed(2)
+    : 0;
+};
+
+const getTimeAnalytics = (conversations) => {
+  const timeAnalytics = {
+    hourly: Array(24).fill(0),
+    daily: Array(7).fill(0),
+    monthly: Array(12).fill(0)
+  };
+
+  conversations.forEach(conv => {
+    const date = new Date(conv.createdAt);
+    timeAnalytics.hourly[date.getHours()]++;
+    timeAnalytics.daily[date.getDay()]++;
+    timeAnalytics.monthly[date.getMonth()]++;
+  });
+
+  return timeAnalytics;
+};
+
+const getLanguageAnalysis = (conversations) => {
+  const userMessages = conversations.flatMap(conv => 
+    conv.messages.filter(msg => msg.role === 'user')
+  );
+
+  const languagePatterns = {
+    english: /^[a-zA-Z\s.,!?]+$/,
+    containsNonLatin: /[^\u0000-\u007F]/,
+    containsCode: /(function|const|let|var|if|for|while|return|import|export|class)/
+  };
+
+  return userMessages.reduce((stats, msg) => {
+    if (languagePatterns.english.test(msg.content)) stats.english++;
+    if (languagePatterns.containsNonLatin.test(msg.content)) stats.nonLatin++;
+    if (languagePatterns.containsCode.test(msg.content)) stats.codeRelated++;
+    return stats;
+  }, { 
+    english: 0, 
+    nonLatin: 0, 
+    codeRelated: 0,
+    totalMessages: userMessages.length 
+  });
+};
+
+const getEmotionAnalytics = (conversations) => {
+  const emotionAnalytics = {
+    overall: {
+      angry: 0,
+      happy: 0,
+      sad: 0,
+      urgent: 0,
+      confused: 0,
+      curious: 0,
+      neutral: 0
+    },
+    trends: {
+      hourly: Array(24).fill().map(() => ({})),
+      daily: Array(7).fill().map(() => ({})),
+      monthly: Array(12).fill().map(() => ({}))
+    },
+    intensityDistribution: {
+      low: 0,
+      medium: 0,
+      high: 0
+    }
+  };
+
+  conversations.forEach(conv => {
+    const userMessages = conv.messages.filter(msg => msg.role === 'user');
+    userMessages.forEach(msg => {
+      const analysis = analyzeEmotion(msg.content);
+      emotionAnalytics.overall[analysis.dominantEmotion]++;
+      
+      if (analysis.intensity <= 1) emotionAnalytics.intensityDistribution.low++;
+      else if (analysis.intensity <= 3) emotionAnalytics.intensityDistribution.medium++;
+      else emotionAnalytics.intensityDistribution.high++;
+
+      const msgDate = new Date(msg.timestamp);
+      const hour = msgDate.getHours();
+      const day = msgDate.getDay();
+      const month = msgDate.getMonth();
+
+      emotionAnalytics.trends.hourly[hour][analysis.dominantEmotion] = 
+        (emotionAnalytics.trends.hourly[hour][analysis.dominantEmotion] || 0) + 1;
+      emotionAnalytics.trends.daily[day][analysis.dominantEmotion] = 
+        (emotionAnalytics.trends.daily[day][analysis.dominantEmotion] || 0) + 1;
+      emotionAnalytics.trends.monthly[month][analysis.dominantEmotion] = 
+        (emotionAnalytics.trends.monthly[month][analysis.dominantEmotion] || 0) + 1;
+    });
+  });
+
+  return emotionAnalytics;
+}; 

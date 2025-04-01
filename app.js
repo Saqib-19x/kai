@@ -64,11 +64,21 @@ app.get('/', (req, res) => {
 // Error handler must be last
 app.use(errorHandler);
 
-// Handle unhandled promise rejections
-process.on('unhandledRejection', (err, promise) => {
-  console.log('Error:', err.message);
-  // Close server & exit process
-  server.close(() => process.exit(1));
+// Add this before your server definition (line 68)
+const PORT = process.env.PORT || 3000;
+
+// Now this line will work
+const server = app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+
+// Then your error handlers can use it
+process.on('unhandledRejection', (err) => {
+  console.log('UNHANDLED REJECTION! Shutting down...');
+  console.log(err.name, err.message);
+  server.close(() => {
+    process.exit(1);
+  });
 });
 
 module.exports = app; 
