@@ -1048,8 +1048,8 @@ const analyzeSentiment = (messages) => {
 // Helper functions for existing analytics calculations
 const calculateTotalMessages = (conversations) => {
   return conversations.reduce((sum, conv) => 
-    sum + conv.messages.filter(msg => msg.role !== 'system').length, 0
-  );
+      sum + conv.messages.filter(msg => msg.role !== 'system').length, 0
+    );
 };
 
 const calculateAvgMessages = (conversations) => {
@@ -1061,25 +1061,25 @@ const calculateAvgMessages = (conversations) => {
 
 const calculateAvgDuration = (conversations) => {
   const durations = conversations.map(conv => {
-    const messages = conv.messages.filter(msg => msg.role !== 'system');
-    if (messages.length < 2) return 0;
-    return new Date(messages[messages.length - 1].timestamp) - new Date(messages[0].timestamp);
-  });
+      const messages = conv.messages.filter(msg => msg.role !== 'system');
+      if (messages.length < 2) return 0;
+      return new Date(messages[messages.length - 1].timestamp) - new Date(messages[0].timestamp);
+    });
 
   return durations.length > 0
     ? (durations.reduce((a, b) => a + b, 0) / durations.length / 1000).toFixed(2)
-    : 0;
+      : 0;
 };
 
 const calculateAvgMessageLength = (conversations) => {
-  const userMessages = conversations.flatMap(conv => 
-    conv.messages.filter(msg => msg.role === 'user')
-  );
-  
-  const messageLengths = userMessages.map(msg => msg.content.length);
+    const userMessages = conversations.flatMap(conv => 
+      conv.messages.filter(msg => msg.role === 'user')
+    );
+
+    const messageLengths = userMessages.map(msg => msg.content.length);
   return messageLengths.length > 0
-    ? (messageLengths.reduce((a, b) => a + b, 0) / messageLengths.length).toFixed(2)
-    : 0;
+      ? (messageLengths.reduce((a, b) => a + b, 0) / messageLengths.length).toFixed(2) 
+      : 0;
 };
 
 const calculateAvgResponseTime = (conversations) => {
@@ -1101,18 +1101,18 @@ const calculateAvgResponseTime = (conversations) => {
 };
 
 const getTimeAnalytics = (conversations) => {
-  const timeAnalytics = {
-    hourly: Array(24).fill(0),
-    daily: Array(7).fill(0),
-    monthly: Array(12).fill(0)
-  };
+    const timeAnalytics = {
+      hourly: Array(24).fill(0),
+      daily: Array(7).fill(0),
+      monthly: Array(12).fill(0)
+    };
 
-  conversations.forEach(conv => {
-    const date = new Date(conv.createdAt);
-    timeAnalytics.hourly[date.getHours()]++;
-    timeAnalytics.daily[date.getDay()]++;
-    timeAnalytics.monthly[date.getMonth()]++;
-  });
+    conversations.forEach(conv => {
+      const date = new Date(conv.createdAt);
+      timeAnalytics.hourly[date.getHours()]++;
+      timeAnalytics.daily[date.getDay()]++;
+      timeAnalytics.monthly[date.getMonth()]++;
+    });
 
   return timeAnalytics;
 };
@@ -1122,17 +1122,17 @@ const getLanguageAnalysis = (conversations) => {
     conv.messages.filter(msg => msg.role === 'user')
   );
 
-  const languagePatterns = {
-    english: /^[a-zA-Z\s.,!?]+$/,
-    containsNonLatin: /[^\u0000-\u007F]/,
-    containsCode: /(function|const|let|var|if|for|while|return|import|export|class)/
-  };
+    const languagePatterns = {
+      english: /^[a-zA-Z\s.,!?]+$/,
+      containsNonLatin: /[^\u0000-\u007F]/,
+      containsCode: /(function|const|let|var|if|for|while|return|import|export|class)/
+    };
 
   return userMessages.reduce((stats, msg) => {
-    if (languagePatterns.english.test(msg.content)) stats.english++;
-    if (languagePatterns.containsNonLatin.test(msg.content)) stats.nonLatin++;
-    if (languagePatterns.containsCode.test(msg.content)) stats.codeRelated++;
-    return stats;
+      if (languagePatterns.english.test(msg.content)) stats.english++;
+      if (languagePatterns.containsNonLatin.test(msg.content)) stats.nonLatin++;
+      if (languagePatterns.containsCode.test(msg.content)) stats.codeRelated++;
+      return stats;
   }, { 
     english: 0, 
     nonLatin: 0, 
@@ -1142,51 +1142,89 @@ const getLanguageAnalysis = (conversations) => {
 };
 
 const getEmotionAnalytics = (conversations) => {
-  const emotionAnalytics = {
-    overall: {
-      angry: 0,
-      happy: 0,
-      sad: 0,
-      urgent: 0,
-      confused: 0,
-      curious: 0,
-      neutral: 0
-    },
-    trends: {
-      hourly: Array(24).fill().map(() => ({})),
-      daily: Array(7).fill().map(() => ({})),
-      monthly: Array(12).fill().map(() => ({}))
-    },
-    intensityDistribution: {
-      low: 0,
-      medium: 0,
-      high: 0
+    const emotionAnalytics = {
+      overall: {
+        angry: 0,
+        happy: 0,
+        sad: 0,
+        urgent: 0,
+        confused: 0,
+        curious: 0,
+        neutral: 0
+      },
+      trends: {
+        hourly: Array(24).fill().map(() => ({})),
+        daily: Array(7).fill().map(() => ({})),
+        monthly: Array(12).fill().map(() => ({}))
+      },
+      intensityDistribution: {
+        low: 0,
+        medium: 0,
+        high: 0
     }
-  };
+    };
 
-  conversations.forEach(conv => {
-    const userMessages = conv.messages.filter(msg => msg.role === 'user');
-    userMessages.forEach(msg => {
-      const analysis = analyzeEmotion(msg.content);
-      emotionAnalytics.overall[analysis.dominantEmotion]++;
-      
-      if (analysis.intensity <= 1) emotionAnalytics.intensityDistribution.low++;
-      else if (analysis.intensity <= 3) emotionAnalytics.intensityDistribution.medium++;
-      else emotionAnalytics.intensityDistribution.high++;
+    conversations.forEach(conv => {
+      const userMessages = conv.messages.filter(msg => msg.role === 'user');
+      userMessages.forEach(msg => {
+        const analysis = analyzeEmotion(msg.content);
+        emotionAnalytics.overall[analysis.dominantEmotion]++;
+        
+        if (analysis.intensity <= 1) emotionAnalytics.intensityDistribution.low++;
+        else if (analysis.intensity <= 3) emotionAnalytics.intensityDistribution.medium++;
+        else emotionAnalytics.intensityDistribution.high++;
 
-      const msgDate = new Date(msg.timestamp);
-      const hour = msgDate.getHours();
-      const day = msgDate.getDay();
-      const month = msgDate.getMonth();
+        const msgDate = new Date(msg.timestamp);
+        const hour = msgDate.getHours();
+        const day = msgDate.getDay();
+        const month = msgDate.getMonth();
 
-      emotionAnalytics.trends.hourly[hour][analysis.dominantEmotion] = 
-        (emotionAnalytics.trends.hourly[hour][analysis.dominantEmotion] || 0) + 1;
-      emotionAnalytics.trends.daily[day][analysis.dominantEmotion] = 
-        (emotionAnalytics.trends.daily[day][analysis.dominantEmotion] || 0) + 1;
-      emotionAnalytics.trends.monthly[month][analysis.dominantEmotion] = 
-        (emotionAnalytics.trends.monthly[month][analysis.dominantEmotion] || 0) + 1;
+        emotionAnalytics.trends.hourly[hour][analysis.dominantEmotion] = 
+          (emotionAnalytics.trends.hourly[hour][analysis.dominantEmotion] || 0) + 1;
+        emotionAnalytics.trends.daily[day][analysis.dominantEmotion] = 
+          (emotionAnalytics.trends.daily[day][analysis.dominantEmotion] || 0) + 1;
+        emotionAnalytics.trends.monthly[month][analysis.dominantEmotion] = 
+          (emotionAnalytics.trends.monthly[month][analysis.dominantEmotion] || 0) + 1;
     });
   });
 
   return emotionAnalytics;
+};
+
+// Add this with the other helper functions
+const calculateConversionRate = (conversations, options = {}) => {
+  if (!conversations.length) return 0;
+
+  const {
+    minMessages = 5,
+    minDurationMs = 2 * 60 * 1000, // 2 minutes
+    requirePositiveSentiment = true
+  } = options;
+
+  const convertedConversations = conversations.filter(conv => {
+    // Message count criterion
+    const messageCount = conv.messages.filter(msg => msg.role !== 'system').length;
+    if (messageCount >= minMessages) return true;
+
+    // Duration criterion
+    const duration = conv.messages.length > 1 ? 
+      new Date(conv.messages[conv.messages.length - 1].timestamp) - 
+      new Date(conv.messages[0].timestamp) : 0;
+    if (duration >= minDurationMs) return true;
+
+    // Sentiment criterion
+    if (requirePositiveSentiment) {
+      const userMessages = conv.messages.filter(msg => msg.role === 'user');
+      if (userMessages.length) {
+        const lastUserMessage = userMessages[userMessages.length - 1].content;
+        const positiveWords = /\b(good|great|excellent|amazing|thank|happy|helpful|perfect|love)\b/i;
+        if (positiveWords.test(lastUserMessage)) return true;
+      }
+    }
+
+    return false;
+  });
+
+  const conversionRate = (convertedConversations.length / conversations.length) * 100;
+  return parseFloat(conversionRate.toFixed(1));
 }; 
