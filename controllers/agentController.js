@@ -749,12 +749,20 @@ exports.getAgentAnalytics = asyncHandler(async (req, res, next) => {
     const endDate = new Date();
     const startDate = getStartDate(timeRange);
 
-    // Filter conversations by time range
+    // Filter conversations by time range for dashboard metrics
     const filteredConversations = conversations.filter(conv => 
       new Date(conv.createdAt) >= startDate && new Date(conv.createdAt) <= endDate
     );
 
-    // Calculate existing analytics
+    // Overview metrics (from the original implementation)
+    const overview = {
+      totalConversations: conversations.length,
+      activeUsers: new Set(conversations.map(conv => conv.user.toString())).size,
+      avgResponseTime: calculateAvgResponseTime(conversations),
+      conversionRate: calculateConversionRate(conversations)
+    };
+
+    // Existing detailed analytics
     const existingAnalytics = {
       agentInfo: {
         name: agent.name,
@@ -764,6 +772,7 @@ exports.getAgentAnalytics = asyncHandler(async (req, res, next) => {
         isPublic: agent.isPublic,
         createdAt: agent.createdAt
       },
+      overview, // Add overview metrics here
       conversationStats: {
         total: conversations.length,
         totalMessages: calculateTotalMessages(conversations),
@@ -781,7 +790,7 @@ exports.getAgentAnalytics = asyncHandler(async (req, res, next) => {
       }
     };
 
-    // Calculate new dashboard analytics
+    // New dashboard analytics
     const dashboardAnalytics = {
       engagementOverview: getEngagementData(filteredConversations, timeRange),
       responseAnalysis: getResponseAnalysis(filteredConversations),
